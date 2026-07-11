@@ -5,7 +5,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import DonutGauge from "../components/DonutGauge.vue";
 import { getDisks, startScan, cancelScan, onScanProgress } from "../api";
 import type { DiskInfo, ScanProgress } from "../api/types";
-import { scanSummary, loadLastScan, saveLastScan, type LastScan } from "../store";
+import { scanSummary, recoverNotice, loadLastScan, saveLastScan, type LastScan } from "../store";
 import { fmtBytes, fmtCount, fmtRelativeTime } from "../utils/format";
 
 const router = useRouter();
@@ -79,6 +79,8 @@ function cancel() {
 <template>
   <main class="home">
     <h1 class="title">C盘救星</h1>
+
+    <p class="recover" v-if="recoverNotice">{{ recoverNotice }}</p>
 
     <template v-if="phase === 'idle'">
       <DonutGauge
@@ -168,6 +170,14 @@ function cancel() {
 
 .error {
   color: var(--color-danger);
+}
+
+.recover {
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: #dcfce7;
+  color: var(--color-success);
+  font-size: var(--font-size-body);
 }
 
 .spinner {

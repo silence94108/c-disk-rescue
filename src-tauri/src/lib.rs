@@ -1,5 +1,6 @@
 mod cleaner;
 mod disk;
+mod migrator;
 mod rules;
 mod scan;
 
@@ -9,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(scan::ScanState::default())
         .manage(cleaner::CleanState::default())
+        .manage(migrator::MigrateState::default())
         .invoke_handler(tauri::generate_handler![
             disk::get_disks,
             scan::start_scan,
@@ -19,6 +21,14 @@ pub fn run() {
             cleaner::check_locks,
             cleaner::run_clean,
             cleaner::cancel_clean,
+            migrator::get_migrate_targets,
+            migrator::start_migrate,
+            migrator::cancel_migrate,
+            migrator::get_migrations,
+            migrator::confirm_migration,
+            migrator::revert_migration,
+            migrator::request_close,
+            migrator::recover_pending_migration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

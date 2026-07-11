@@ -158,7 +158,7 @@ fn measure_dir(dir: &Path, patterns: Option<&[String]>) -> (u64, u64) {
 
 /// 递归取样至多 limit 个文件,供 Restart Manager 注册。
 /// 浏览器进程锁定的是缓存子目录里的具体文件,故必须深入取样而非只看顶层。
-fn sample_files(dir: &Path, limit: usize) -> Vec<PathBuf> {
+pub(crate) fn sample_files(dir: &Path, limit: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -183,9 +183,14 @@ fn sample_files(dir: &Path, limit: usize) -> Vec<PathBuf> {
     out
 }
 
-/// 用 Restart Manager 查询哪些进程锁定了这些文件,返回软件友好名(如「Google Chrome」)。
+pub(crate) struct LockingApp {
+    pub pid: u32,
+    pub name: String,
+}
+
+/// 用 Restart Manager 查询哪些进程锁定了这些文件(pid + 软件友好名)。
 /// 按文件锁判定而非进程名匹配——软件跨版本会改进程名(需求文档 F2 前置检查)。
-fn who_locks(files: &[PathBuf]) -> Vec<String> {
+pub(crate) fn locking_apps(files: &[PathBuf]) -> Vec<LockingApp> {
     use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
     use windows_sys::Win32::System::RestartManager::{
         RmEndSession, RmGetList, RmRegisterResources, RmStartSession, RM_PROCESS_INFO,
@@ -195,7 +200,7 @@ fn who_locks(files: &[PathBuf]) -> Vec<String> {
     }
     let wides: Vec<Vec<u16>> = files.iter().map(|p| to_wide(p)).collect();
     let ptrs: Vec<*const u16> = wides.iter().map(|w| w.as_ptr()).collect();
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<LockingApp> = Vec::new();
     unsafe {
         let mut session: u32 = 0;
         // CCH_RM_SESSION_KEY(32) + 终止符
@@ -223,8 +228,11 @@ fn who_locks(files: &[PathBuf]) -> Vec<String> {
                 for info in infos.iter().take(count.min(16) as usize) {
                     let len = info.strAppName.iter().position(|&c| c == 0).unwrap_or(0);
                     let name = String::from_utf16_lossy(&info.strAppName[..len]);
-                    if !name.is_empty() && !out.contains(&name) {
-                        out.push(name);
+                    if !name.is_empty() {
+                        out.push(LockingApp {
+                            pid: info.Process.dwProcessId,
+                            name,
+                        });
                     }
                 }
             }
@@ -232,6 +240,17 @@ fn who_locks(files: &[PathBuf]) -> Vec<String> {
         RmEndSession(session);
     }
     out
+}
+
+/// 锁定软件的友好名去重列表(如「Google Chrome」),UI 展示用
+pub(crate) fn who_locks(files: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for app in locking_apps(files) {
+        if !names.contains(&app.name) {
+            names.push(app.name);
+        }
+    }
+    names
 }
 
 fn recycle_bin_status() -> (u64, u64) {
@@ -337,14 +356,15 @@ pub struct LockStatus {
 }
 
 /// 轻量复查:只做 Restart Manager 文件锁检测,不重新统计大小。
-/// 报告页轮询用——用户退出软件后卡片自动解锁(设计规范 §3.4「检测到进程退出后自动亮起」)。
+/// 报告页与搬家向导轮询用——用户退出软件后自动解锁/亮起下一步
+/// (设计规范 §3.4「检测到进程退出后自动亮起」)。
 #[tauri::command]
 pub async fn check_locks(rule_ids: Vec<String>) -> Result<Vec<LockStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut out = Vec::new();
         for rule in load_rules()
             .into_iter()
-            .filter(|r| r.action == "clean" && rule_ids.iter().any(|id| id == &r.id))
+            .filter(|r| rule_ids.iter().any(|id| id == &r.id))
         {
             // 无关联进程的项(Temp 类)不做锁检测,与 scan_cleanables 口径一致
             if rule.related_processes.is_empty() {

@@ -97,3 +97,36 @@ export interface CleanResult {
   skipped: SkippedRule[];
   logPath: string | null;
 }
+
+export interface TargetDisk {
+  mountPoint: string;
+  freeBytes: number;
+  isNtfs: boolean;
+  recommended: boolean;
+}
+
+export interface MigrateProgress {
+  copiedBytes: number;
+  totalBytes: number;
+  currentFile: string;
+}
+
+export interface MigrateRecord {
+  ruleId: string;
+  displayName: string;
+  /** 原位置(现为联接) */
+  src: string;
+  /** 数据现在的实际位置 */
+  dst: string;
+  /** 源目录备份;确认软件正常后删除,置 null */
+  bak: string | null;
+  bytes: number;
+  fileCount: number;
+  at: string;
+}
+
+export interface MigrateResult {
+  movedBytes: number;
+  fileCount: number;
+  dst: string;
+}

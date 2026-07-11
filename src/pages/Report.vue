@@ -204,11 +204,11 @@ async function startClean() {
             <span class="card-size num">{{ fmtBytes(junkTotal) }}</span>
             <span class="card-note">可一键清理</span>
           </div>
-          <div class="card">
+          <button class="card clickable" @click="router.push('/migrate')">
             <span class="card-name">可搬家</span>
             <span class="card-size num">{{ fmtBytes(migrateTotal) }}</span>
-            <span class="card-note">搬家功能下个版本开放</span>
-          </div>
+            <span class="card-note link-note">去搬家 ›</span>
+          </button>
           <div class="card">
             <span class="card-name">大文件</span>
             <span class="card-size">—</span>
@@ -330,6 +330,20 @@ async function startClean() {
 
 .card.active {
   border-color: var(--color-primary);
+}
+
+.card.clickable {
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s;
+}
+
+.card.clickable:hover {
+  border-color: var(--color-primary);
+}
+
+.link-note {
+  color: var(--color-primary);
 }
 
 .card-name {

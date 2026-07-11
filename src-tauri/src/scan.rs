@@ -34,6 +34,10 @@ pub struct ScanState {
     pub result: Mutex<Option<ScanResult>>,
     pub running: AtomicBool,
     pub cancel: AtomicBool,
+    /// 撤回搬家的目录:小写路径 → 撤回时的精确字节数。
+    /// 体检时已迁移目录是联接、快照里大小为 0,撤回后它重新占用 C 盘,
+    /// 该表把撤回时统计到的大小补进「可搬家」;重新体检后作废清空。
+    pub reverted: Mutex<std::collections::HashMap<String, u64>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -337,6 +341,8 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
         rules,
         root_path: root,
     });
+    // 新快照已含撤回目录的真实数据,补丁表作废
+    state.reverted.lock().unwrap().clear();
     Ok(summary)
 }
 
@@ -404,24 +410,45 @@ pub struct MigratableItem {
 }
 
 /// 从扫描树汇总可搬家(migrate 规则)目录:报告页「可搬家 X GB」卡片数据源。
-/// 已迁移目录(reparse)不参与扫描,total_bytes 为 0,天然被过滤。
+/// 扫描树是体检时刻的快照,两处与现实的偏差都在此校正:
+/// ① 刚搬完家的目录树里还是原样 → 实时复查联接状态,已迁移的不再列出;
+/// ② 刚撤回的目录树里大小为 0(体检时是联接) → 用撤回补丁表里的精确大小补回。
 #[tauri::command]
 pub fn get_migratables(state: State<'_, ScanState>) -> Result<Vec<MigratableItem>, String> {
     let guard = state.result.lock().map_err(|e| e.to_string())?;
     let scan = guard.as_ref().ok_or("尚未完成扫描")?;
+    let reverted = state.reverted.lock().map_err(|e| e.to_string())?;
     let mut out: Vec<MigratableItem> = Vec::new();
     for (i, node) in scan.nodes.iter().enumerate() {
         let Some(ri) = node.rule else { continue };
         let r = &scan.rules[ri as usize];
-        if r.action != "migrate" || node.total_bytes == 0 {
+        if r.action != "migrate" {
+            continue;
+        }
+        let path = node_path(scan, i as u32);
+        let migrated_or_gone = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true);
+        if migrated_or_gone {
+            continue;
+        }
+        let size_bytes = if node.total_bytes > 0 {
+            node.total_bytes
+        } else {
+            reverted
+                .get(&path.to_string_lossy().to_lowercase())
+                .copied()
+                .unwrap_or(0)
+        };
+        if size_bytes == 0 {
             continue;
         }
         out.push(MigratableItem {
             rule_id: r.id.clone(),
             display_name: r.display_name.clone(),
             explain: r.explain.clone(),
-            path: node_path(scan, i as u32).to_string_lossy().into_owned(),
-            size_bytes: node.total_bytes,
+            path: path.to_string_lossy().into_owned(),
+            size_bytes,
         });
     }
     out.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));

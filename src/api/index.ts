@@ -7,8 +7,12 @@ import type {
   DiskInfo,
   LockStatus,
   MigratableItem,
+  MigrateProgress,
+  MigrateRecord,
+  MigrateResult,
   ScanProgress,
   ScanSummary,
+  TargetDisk,
   TreeNode,
 } from "./types";
 
@@ -41,3 +45,30 @@ export const onScanProgress = (
 export const onCleanProgress = (
   cb: (p: CleanProgress) => void,
 ): Promise<UnlistenFn> => listen<CleanProgress>("clean:progress", (e) => cb(e.payload));
+
+export const getMigrateTargets = () => invoke<TargetDisk[]>("get_migrate_targets");
+
+export const startMigrate = (ruleId: string, targetRoot: string) =>
+  invoke<MigrateResult>("start_migrate", { ruleId, targetRoot });
+
+export const cancelMigrate = () => invoke<void>("cancel_migrate");
+
+export const getMigrations = () => invoke<MigrateRecord[]>("get_migrations");
+
+export const confirmMigration = (ruleId: string) =>
+  invoke<void>("confirm_migration", { ruleId });
+
+export const revertMigration = (ruleId: string) =>
+  invoke<void>("revert_migration", { ruleId });
+
+/** 「帮我退出」:优雅关闭锁定进程,返回超时仍在锁定的软件名(空 = 成功) */
+export const requestClose = (ruleId: string) =>
+  invoke<string[]>("request_close", { ruleId });
+
+export const recoverPendingMigration = () =>
+  invoke<string | null>("recover_pending_migration");
+
+export const onMigrateProgress = (
+  cb: (p: MigrateProgress) => void,
+): Promise<UnlistenFn> =>
+  listen<MigrateProgress>("migrate:progress", (e) => cb(e.payload));
