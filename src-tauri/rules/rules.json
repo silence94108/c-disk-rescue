@@ -63,6 +63,26 @@
     "action": "clean"
   },
   {
+    "id": "thumbnail-cache",
+    "pathPattern": "%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer",
+    "filePatterns": ["thumbcache_*.db", "iconcache_*.db"],
+    "displayName": "图片缩略图缓存",
+    "explain": "文件夹里图片预览小图的缓存。删除后打开图片文件夹时系统会重新生成,不影响图片本身。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "crash-dumps",
+    "pathPattern": "%LOCALAPPDATA%\\CrashDumps",
+    "filePatterns": ["*.dmp"],
+    "displayName": "程序崩溃记录",
+    "explain": "软件崩溃时留下的调试记录文件,只对开发人员排查问题有用,平时用不到。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
     "id": "npm-cache",
     "pathPattern": "%LOCALAPPDATA%\\npm-cache",
     "displayName": "npm 下载缓存(开发)",
@@ -72,10 +92,37 @@
     "action": "clean"
   },
   {
+    "id": "yarn-cache",
+    "pathPattern": "%LOCALAPPDATA%\\Yarn\\Cache",
+    "displayName": "Yarn 下载缓存(开发)",
+    "explain": "安装前端依赖时留下的下载缓存,删除后将来需要时会重新下载。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "pnpm-store",
+    "pathPattern": "%LOCALAPPDATA%\\pnpm\\store",
+    "displayName": "pnpm 依赖仓库(开发)",
+    "explain": "pnpm 存放所有项目依赖的仓库。删除后已有项目不受影响,但重装依赖时需要重新下载。",
+    "risk": "cost",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
     "id": "pip-cache",
     "pathPattern": "%LOCALAPPDATA%\\pip\\cache",
     "displayName": "pip 下载缓存(开发)",
     "explain": "安装 Python 包时留下的下载缓存,删除后将来需要时会重新下载。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "typescript-cache",
+    "pathPattern": "%LOCALAPPDATA%\\Microsoft\\TypeScript",
+    "displayName": "TypeScript 版本缓存(开发)",
+    "explain": "编辑器自动下载的 TypeScript 各版本副本,删除后编辑器需要时会重新下载。",
     "risk": "safe",
     "relatedProcesses": [],
     "action": "clean"
@@ -96,6 +143,55 @@
     "explain": "网页图片和文件的临时副本。删除后首次打开网页会稍慢,之后恢复正常。不含密码和收藏。",
     "risk": "cost",
     "relatedProcesses": ["msedge.exe"],
+    "action": "clean"
+  },
+  {
+    "id": "recycle-bin",
+    "pathPattern": "special:recycle-bin",
+    "displayName": "回收站",
+    "explain": "你删除过的文件都还躺在这里占着 C 盘空间。清空后这些文件将无法找回,确认里面没有想要的再清。",
+    "risk": "caution",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "windows-temp",
+    "pathPattern": "%WINDIR%\\Temp",
+    "displayName": "系统临时文件",
+    "explain": "Windows 系统自己产生的临时文件,清理不影响系统运行。",
+    "risk": "safe",
+    "needsAdmin": true,
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "software-distribution",
+    "pathPattern": "%WINDIR%\\SoftwareDistribution\\Download",
+    "displayName": "系统更新残留安装包",
+    "explain": "Windows 更新下载的安装包,更新装完后就用不到了。正在更新时清理会导致重新下载。",
+    "risk": "safe",
+    "needsAdmin": true,
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "delivery-optimization",
+    "pathPattern": "%WINDIR%\\ServiceProfiles\\NetworkService\\AppData\\Local\\Microsoft\\Windows\\DeliveryOptimization\\Cache",
+    "displayName": "系统更新分发缓存",
+    "explain": "Windows 用来给局域网其他电脑加速更新的缓存,删除后系统需要时会重新下载。",
+    "risk": "safe",
+    "needsAdmin": true,
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "windows-old",
+    "pathPattern": "%SystemDrive%\\Windows.old",
+    "displayName": "旧版本系统备份",
+    "explain": "系统大更新后留下的旧系统备份,通常有 10~30GB。删除后将无法回退到旧版本系统,系统用着正常就可以删。",
+    "risk": "cost",
+    "needsAdmin": true,
+    "relatedProcesses": [],
     "action": "clean"
   }
 ]

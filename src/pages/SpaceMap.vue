@@ -31,7 +31,7 @@ onMounted(async () => {
 <template>
   <main class="map" v-if="summary">
     <header class="head">
-      <button class="back" @click="router.push('/')">‹ 返回</button>
+      <button class="back" @click="router.push('/report')">‹ 返回报告</button>
       <div class="head-stat">
         <span class="head-title">C盘空间分布</span>
         <span class="head-sub num">

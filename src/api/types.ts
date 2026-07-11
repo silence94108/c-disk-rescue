@@ -45,3 +45,55 @@ export interface TreeNode {
   reparseTarget: string | null;
   rule: RuleTag | null;
 }
+
+export interface MigratableItem {
+  ruleId: string;
+  displayName: string;
+  explain: string;
+  path: string;
+  sizeBytes: number;
+}
+
+export interface CleanableItem {
+  ruleId: string;
+  displayName: string;
+  explain: string;
+  risk: Risk;
+  needsAdmin: boolean;
+  path: string;
+  sizeBytes: number;
+  fileCount: number;
+  /** 正锁定该项文件的软件友好名(Restart Manager 检出),非空则置灰并提示退出 */
+  lockedBy: string[];
+}
+
+export interface CleanablesReport {
+  items: CleanableItem[];
+  /** 当前进程是否已提权,决定 needsAdmin 项能否执行 */
+  isElevated: boolean;
+}
+
+export interface LockStatus {
+  ruleId: string;
+  lockedBy: string[];
+}
+
+export interface CleanProgress {
+  ruleId: string;
+  freedBytes: number;
+  deletedFiles: number;
+}
+
+export interface SkippedRule {
+  ruleId: string;
+  reason: string;
+}
+
+export interface CleanResult {
+  freedBytes: number;
+  deletedFiles: number;
+  /** 被占用等原因跳过的文件数(容错设计,不算失败) */
+  failedFiles: number;
+  skipped: SkippedRule[];
+  logPath: string | null;
+}

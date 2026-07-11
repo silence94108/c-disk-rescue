@@ -24,11 +24,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossbeam-channel = "0.5"
 sysinfo = "0.33"
+chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
+  "Win32_System_RestartManager",
+  "Win32_System_Threading",
+  "Win32_Security",
+  "Win32_UI_Shell",
 ] }
 
 # dev 模式下依赖库按 O2 编译:扫描性能接近 release,自身代码仍保持快速增量编译

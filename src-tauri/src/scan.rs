@@ -88,7 +88,7 @@ const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 /// OneDrive 按需文件/稀疏/压缩文件的逻辑大小会虚高(占位文件逻辑 10GB 实占 0),
 /// 统计口径必须是实际占用——只对带特殊属性的文件多付一次系统调用,普通文件走快路径。
 /// 全程只读元数据,绝不打开文件内容,避免触发 OneDrive 全量下载(需求文档 F1 特殊处理②)。
-fn allocated_size(path: &Path, logical: u64, attrs: u32) -> u64 {
+pub(crate) fn allocated_size(path: &Path, logical: u64, attrs: u32) -> u64 {
     const SPECIAL: u32 = FILE_ATTRIBUTE_SPARSE_FILE
         | FILE_ATTRIBUTE_COMPRESSED
         | FILE_ATTRIBUTE_OFFLINE
@@ -391,6 +391,41 @@ pub fn cancel_scan(state: State<'_, ScanState>) {
     if state.running.load(Ordering::SeqCst) {
         state.cancel.store(true, Ordering::SeqCst);
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigratableItem {
+    rule_id: String,
+    display_name: String,
+    explain: String,
+    path: String,
+    size_bytes: u64,
+}
+
+/// 从扫描树汇总可搬家(migrate 规则)目录:报告页「可搬家 X GB」卡片数据源。
+/// 已迁移目录(reparse)不参与扫描,total_bytes 为 0,天然被过滤。
+#[tauri::command]
+pub fn get_migratables(state: State<'_, ScanState>) -> Result<Vec<MigratableItem>, String> {
+    let guard = state.result.lock().map_err(|e| e.to_string())?;
+    let scan = guard.as_ref().ok_or("尚未完成扫描")?;
+    let mut out: Vec<MigratableItem> = Vec::new();
+    for (i, node) in scan.nodes.iter().enumerate() {
+        let Some(ri) = node.rule else { continue };
+        let r = &scan.rules[ri as usize];
+        if r.action != "migrate" || node.total_bytes == 0 {
+            continue;
+        }
+        out.push(MigratableItem {
+            rule_id: r.id.clone(),
+            display_name: r.display_name.clone(),
+            explain: r.explain.clone(),
+            path: node_path(scan, i as u32).to_string_lossy().into_owned(),
+            size_bytes: node.total_bytes,
+        });
+    }
+    out.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    Ok(out)
 }
 
 /// 懒加载:前端每展开一层才取一层,整棵树留在 Rust 侧

@@ -54,8 +54,12 @@ async function startCheck() {
     });
     const summary = await startScan();
     scanSummary.value = summary;
-    saveLastScan({ at: Date.now(), totalBytes: summary.totalBytes });
-    router.push("/map");
+    saveLastScan({
+      at: Date.now(),
+      totalBytes: summary.totalBytes,
+      freedBytes: lastScan.value?.freedBytes,
+    });
+    router.push("/report");
   } catch (e) {
     if (String(e) !== "cancelled") {
       errorMsg.value = "扫描没有完成,你的电脑没有任何变化,再试一次就好";
@@ -90,7 +94,14 @@ function cancel() {
       <button class="primary-btn" @click="startCheck">开始体检(约1分钟)</button>
 
       <p class="last-scan" v-if="lastScan">
-        上次体检:C盘共占用 {{ fmtBytes(lastScan.totalBytes) }} · {{ fmtRelativeTime(lastScan.at) }}
+        <template v-if="lastScan.freedBytes"
+          >上次体检:释放了 {{ fmtBytes(lastScan.freedBytes) }} ·
+          {{ fmtRelativeTime(lastScan.at) }}</template
+        >
+        <template v-else
+          >上次体检:C盘共占用 {{ fmtBytes(lastScan.totalBytes) }} ·
+          {{ fmtRelativeTime(lastScan.at) }}</template
+        >
       </p>
       <p class="error" v-if="errorMsg">{{ errorMsg }}</p>
     </template>
