@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -88,7 +88,7 @@ const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 /// OneDrive 按需文件/稀疏/压缩文件的逻辑大小会虚高(占位文件逻辑 10GB 实占 0),
 /// 统计口径必须是实际占用——只对带特殊属性的文件多付一次系统调用,普通文件走快路径。
 /// 全程只读元数据,绝不打开文件内容,避免触发 OneDrive 全量下载(需求文档 F1 特殊处理②)。
-fn allocated_size(path: &std::path::Path, logical: u64, attrs: u32) -> u64 {
+fn allocated_size(path: &Path, logical: u64, attrs: u32) -> u64 {
     const SPECIAL: u32 = FILE_ATTRIBUTE_SPARSE_FILE
         | FILE_ATTRIBUTE_COMPRESSED
         | FILE_ATTRIBUTE_OFFLINE
@@ -116,23 +116,80 @@ fn allocated_size(path: &std::path::Path, logical: u64, attrs: u32) -> u64 {
     ((high as u64) << 32) | low as u64
 }
 
-fn node_path(scan: &ScanResult, id: u32) -> PathBuf {
-    let mut names: Vec<&str> = Vec::new();
-    let mut cur = &scan.nodes[id as usize];
-    loop {
-        match cur.parent {
-            Some(p) => {
-                names.push(&cur.name);
-                cur = &scan.nodes[p as usize];
-            }
-            None => break,
+/// worker 扫完一个目录发回的汇总。文件级信息就地聚合,不跨线程传条目。
+struct DirScanMsg {
+    node_id: u32,
+    path: PathBuf,
+    direct_bytes: u64,
+    file_count: u64,
+    denied: u64,
+    subdirs: Vec<SubDir>,
+}
+
+struct SubDir {
+    name: String,
+    is_reparse: bool,
+    reparse_target: Option<String>,
+}
+
+/// 单目录扫描:一次 read_dir 枚举。Windows 上 FindNextFile 已带回大小与属性,
+/// std 将其缓存于 DirEntry,metadata() 零额外系统调用——这是普通权限下的物理下限。
+/// (jwalk 的 metadata() 会按路径重新查询,弃用它正是为了这份免费数据)
+fn scan_one_dir(node_id: u32, path: &Path) -> DirScanMsg {
+    let mut msg = DirScanMsg {
+        node_id,
+        path: path.to_path_buf(),
+        direct_bytes: 0,
+        file_count: 0,
+        denied: 0,
+        subdirs: Vec::new(),
+    };
+    let read = match std::fs::read_dir(path) {
+        Ok(r) => r,
+        Err(_) => {
+            msg.denied = 1;
+            return msg;
+        }
+    };
+    for entry in read {
+        let Ok(entry) = entry else {
+            msg.denied += 1;
+            continue;
+        };
+        let Ok(ft) = entry.file_type() else {
+            msg.denied += 1;
+            continue;
+        };
+        if ft.is_symlink() {
+            // junction/symlink:标注「已迁移」并显示指向,绝不跟入(产品红线)
+            let p = entry.path();
+            msg.subdirs.push(SubDir {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_reparse: true,
+                reparse_target: std::fs::read_link(&p)
+                    .ok()
+                    .map(|t| t.to_string_lossy().into_owned()),
+            });
+        } else if ft.is_dir() {
+            msg.subdirs.push(SubDir {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_reparse: false,
+                reparse_target: None,
+            });
+        } else {
+            let Ok(meta) = entry.metadata() else {
+                msg.denied += 1;
+                continue;
+            };
+            use std::os::windows::fs::MetadataExt;
+            let attrs = meta.file_attributes();
+            let logical = meta.len();
+            // 仅特殊属性文件才拼路径并额外查询实占
+            msg.direct_bytes += allocated_size(&entry.path(), logical, attrs);
+            msg.file_count += 1;
         }
     }
-    let mut path = scan.root_path.clone();
-    for name in names.iter().rev() {
-        path.push(name);
-    }
-    path
+    msg
 }
 
 fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSummary, String> {
@@ -158,101 +215,100 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
         reparse_target: None,
         rule: None,
     }];
-    // 遍历产出的 parent_path 与建节点时的 path 字符串来源一致,可作精确键
-    let mut index: HashMap<PathBuf, u32> = HashMap::new();
-    index.insert(root.clone(), 0);
 
     let mut files: u64 = 0;
     let mut bytes: u64 = 0;
     let mut denied: u64 = 0;
     let mut last_emit = Instant::now();
+    let mut cancelled = false;
 
-    let walker = jwalk::WalkDir::new(&root)
-        .follow_links(false)
-        .skip_hidden(false);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(4, 16);
+    let (task_tx, task_rx) = crossbeam_channel::unbounded::<(u32, PathBuf)>();
+    let (res_tx, res_rx) = crossbeam_channel::unbounded::<DirScanMsg>();
 
-    for entry in walker {
-        if state.cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".into());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let task_rx = task_rx.clone();
+            let res_tx = res_tx.clone();
+            let cancel = &state.cancel;
+            s.spawn(move || {
+                while let Ok((node_id, path)) = task_rx.recv() {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if res_tx.send(scan_one_dir(node_id, &path)).is_err() {
+                        break;
+                    }
+                }
+            });
         }
-        let e = match entry {
-            Ok(e) => e,
-            Err(_) => {
-                denied += 1;
-                continue;
+        // 主线程仅持 worker 手里的克隆,自身的原件立即释放,
+        // 这样 drop(task_tx) 后 worker 的 recv 才能断开
+        drop(task_rx);
+        drop(res_tx);
+
+        let mut pending: u64 = 1;
+        let _ = task_tx.send((0, root.clone()));
+
+        while pending > 0 {
+            if state.cancel.load(Ordering::Relaxed) {
+                cancelled = true;
+                break;
             }
-        };
-        if e.depth == 0 {
-            continue;
-        }
-        let parent_id = match index.get(e.parent_path()) {
-            Some(&id) => id,
-            None => continue, // 父目录曾读取失败,子项无处挂,跳过
-        };
+            let Ok(msg) = res_rx.recv() else { break };
+            pending -= 1;
 
-        if e.file_type.is_symlink() {
-            // junction/symlink:标注「已迁移」并显示指向,绝不跟入(产品红线)
-            let path = e.path();
-            let target = std::fs::read_link(&path)
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned());
-            let id = nodes.len() as u32;
-            let rule = rule_paths
-                .get(&path.to_string_lossy().to_lowercase())
-                .copied();
-            nodes.push(DirNode {
-                name: e.file_name.to_string_lossy().into_owned(),
-                parent: Some(parent_id),
-                total_bytes: 0,
-                file_count: 0,
-                children: Vec::new(),
-                is_reparse: true,
-                reparse_target: target,
-                rule,
-            });
-            nodes[parent_id as usize].children.push(id);
-        } else if e.file_type.is_dir() {
-            let path = e.path();
-            let id = nodes.len() as u32;
-            let rule = rule_paths
-                .get(&path.to_string_lossy().to_lowercase())
-                .copied();
-            nodes.push(DirNode {
-                name: e.file_name.to_string_lossy().into_owned(),
-                parent: Some(parent_id),
-                total_bytes: 0,
-                file_count: 0,
-                children: Vec::new(),
-                is_reparse: false,
-                reparse_target: None,
-                rule,
-            });
-            nodes[parent_id as usize].children.push(id);
-            index.insert(path, id);
-        } else {
-            let Ok(meta) = e.metadata() else {
-                denied += 1;
-                continue;
-            };
-            use std::os::windows::fs::MetadataExt;
-            let size = allocated_size(&e.path(), meta.len(), meta.file_attributes());
-            let p = &mut nodes[parent_id as usize];
-            p.total_bytes += size;
-            p.file_count += 1;
-            files += 1;
-            bytes += size;
-            if files % 512 == 0 && last_emit.elapsed().as_millis() >= 100 {
+            files += msg.file_count;
+            bytes += msg.direct_bytes;
+            denied += msg.denied;
+            {
+                let n = &mut nodes[msg.node_id as usize];
+                n.total_bytes += msg.direct_bytes;
+                n.file_count += msg.file_count;
+            }
+            for sub in msg.subdirs {
+                let child_path = msg.path.join(&sub.name);
+                let id = nodes.len() as u32;
+                let rule = rule_paths
+                    .get(&child_path.to_string_lossy().to_lowercase())
+                    .copied();
+                nodes.push(DirNode {
+                    name: sub.name,
+                    parent: Some(msg.node_id),
+                    total_bytes: 0,
+                    file_count: 0,
+                    children: Vec::new(),
+                    is_reparse: sub.is_reparse,
+                    reparse_target: sub.reparse_target,
+                    rule,
+                });
+                nodes[msg.node_id as usize].children.push(id);
+                if !nodes[id as usize].is_reparse {
+                    pending += 1;
+                    let _ = task_tx.send((id, child_path));
+                }
+            }
+
+            if last_emit.elapsed().as_millis() >= 100 {
                 let _ = app.emit(
                     "scan:progress",
                     ScanProgress {
                         scanned_files: files,
                         scanned_bytes: bytes,
-                        current_path: e.parent_path().to_string_lossy().into_owned(),
+                        current_path: msg.path.to_string_lossy().into_owned(),
                     },
                 );
                 last_emit = Instant::now();
             }
         }
+        drop(task_tx); // 断开任务队列,worker recv 出错退出,scope 随即回收
+    });
+
+    if cancelled {
+        return Err("cancelled".into());
     }
 
     // 自底向上汇总:child.id > parent.id,倒序一遍完成
@@ -282,6 +338,25 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
         root_path: root,
     });
     Ok(summary)
+}
+
+fn node_path(scan: &ScanResult, id: u32) -> PathBuf {
+    let mut names: Vec<&str> = Vec::new();
+    let mut cur = &scan.nodes[id as usize];
+    loop {
+        match cur.parent {
+            Some(p) => {
+                names.push(&cur.name);
+                cur = &scan.nodes[p as usize];
+            }
+            None => break,
+        }
+    }
+    let mut path = scan.root_path.clone();
+    for name in names.iter().rev() {
+        path.push(name);
+    }
+    path
 }
 
 #[tauri::command]
