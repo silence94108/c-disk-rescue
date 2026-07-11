@@ -1,0 +1,52 @@
+/* 设计 token —— 唯一取值来源:docs/设计规范.md §4(深色模式首版不做,变量已预留) */
+:root {
+  --color-primary: #2563eb;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-text: #1f2937;
+  --color-text-secondary: #6b7280;
+  --color-bg: #f9fafb;
+  --color-card: #ffffff;
+  --radius-card: 12px;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+  --font-size-hero: 32px;
+  --font-size-title: 20px;
+  --font-size-card-title: 16px;
+  --font-size-body: 14px;
+  --font-size-aux: 12px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  font-size: var(--font-size-body);
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-bg);
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  border: none;
+  cursor: pointer;
+  background: none;
+}

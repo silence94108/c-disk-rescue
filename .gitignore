@@ -4,3 +4,12 @@
 #VS code
 .history
 .vscode
+
+# Node
+node_modules
+dist
+*.log
+*.local
+
+# Rust
+src-tauri/target

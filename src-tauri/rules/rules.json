@@ -1,0 +1,101 @@
+[
+  {
+    "id": "wechat-v4",
+    "pathPattern": "%USERPROFILE%\\xwechat_files",
+    "displayName": "微信(新版)的聊天文件",
+    "explain": "微信保存的聊天记录里的图片、视频和文件。可以搬到其他盘,微信照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["Weixin.exe", "WeChat.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "wechat-v4-docs",
+    "pathPattern": "%USERPROFILE%\\Documents\\xwechat_files",
+    "displayName": "微信(新版)的聊天文件",
+    "explain": "微信保存的聊天记录里的图片、视频和文件。可以搬到其他盘,微信照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["Weixin.exe", "WeChat.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "wechat-v3",
+    "pathPattern": "%USERPROFILE%\\Documents\\WeChat Files",
+    "displayName": "微信(旧版)的聊天文件",
+    "explain": "旧版微信保存的聊天记录和接收的文件。可以搬到其他盘,微信照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["WeChat.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "wxwork",
+    "pathPattern": "%APPDATA%\\Tencent\\WXWork",
+    "displayName": "企业微信的缓存和运行组件",
+    "explain": "企业微信的聊天缓存和运行文件。可以搬到其他盘,企业微信照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["WXWork.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "dingtalk",
+    "pathPattern": "%APPDATA%\\DingTalk",
+    "displayName": "钉钉的数据和缓存",
+    "explain": "钉钉的聊天记录缓存和运行数据。可以搬到其他盘,钉钉照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["DingTalk.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "qq-nt",
+    "pathPattern": "%USERPROFILE%\\Documents\\Tencent Files",
+    "displayName": "QQ 的聊天文件",
+    "explain": "QQ 保存的聊天记录里的图片和文件。可以搬到其他盘,QQ 照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["QQ.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "user-temp",
+    "pathPattern": "%LOCALAPPDATA%\\Temp",
+    "displayName": "Windows 临时文件",
+    "explain": "软件运行时产生的临时文件,系统和软件都不再需要它们。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "npm-cache",
+    "pathPattern": "%LOCALAPPDATA%\\npm-cache",
+    "displayName": "npm 下载缓存(开发)",
+    "explain": "安装前端依赖时留下的下载缓存,删除后将来需要时会重新下载。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "pip-cache",
+    "pathPattern": "%LOCALAPPDATA%\\pip\\cache",
+    "displayName": "pip 下载缓存(开发)",
+    "explain": "安装 Python 包时留下的下载缓存,删除后将来需要时会重新下载。",
+    "risk": "safe",
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
+    "id": "chrome-cache",
+    "pathPattern": "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Cache",
+    "displayName": "Chrome 浏览器缓存",
+    "explain": "网页图片和文件的临时副本。删除后首次打开网页会稍慢,之后恢复正常。不含密码和收藏。",
+    "risk": "cost",
+    "relatedProcesses": ["chrome.exe"],
+    "action": "clean"
+  },
+  {
+    "id": "edge-cache",
+    "pathPattern": "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Cache",
+    "displayName": "Edge 浏览器缓存",
+    "explain": "网页图片和文件的临时副本。删除后首次打开网页会稍慢,之后恢复正常。不含密码和收藏。",
+    "risk": "cost",
+    "relatedProcesses": ["msedge.exe"],
+    "action": "clean"
+  }
+]
