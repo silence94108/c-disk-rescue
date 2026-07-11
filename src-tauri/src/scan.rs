@@ -23,10 +23,18 @@ struct DirNode {
     rule: Option<u16>,
 }
 
+struct BigFileEntry {
+    dir: u32,
+    name: String,
+    size: u64,
+    mtime_ms: u64,
+}
+
 pub struct ScanResult {
     nodes: Vec<DirNode>,
     rules: Vec<Rule>,
     root_path: PathBuf,
+    big_files: Vec<BigFileEntry>,
 }
 
 #[derive(Default)]
@@ -128,7 +136,21 @@ struct DirScanMsg {
     file_count: u64,
     denied: u64,
     subdirs: Vec<SubDir>,
+    /// 顺带收集的大文件(F4):扫描本来就枚举每个文件,收集零额外系统调用
+    big_files: Vec<BigFileRaw>,
 }
+
+struct BigFileRaw {
+    name: String,
+    size: u64,
+    mtime_ms: u64,
+}
+
+/// 大文件收录门槛:实占 ≥100MB(需求文档 F4)。用实占而非逻辑大小——
+/// OneDrive 占位文件逻辑 10GB 实占 0,删它并不腾出 C 盘,不该进列表
+const BIG_FILE_MIN: u64 = 100 * 1024 * 1024;
+/// 收集上限:一般 C 盘 ≥100MB 文件几十到几百个,上限只防极端盘
+const BIG_FILE_CAP: usize = 5000;
 
 struct SubDir {
     name: String,
@@ -147,6 +169,7 @@ fn scan_one_dir(node_id: u32, path: &Path) -> DirScanMsg {
         file_count: 0,
         denied: 0,
         subdirs: Vec::new(),
+        big_files: Vec::new(),
     };
     let read = match std::fs::read_dir(path) {
         Ok(r) => r,
@@ -189,8 +212,22 @@ fn scan_one_dir(node_id: u32, path: &Path) -> DirScanMsg {
             let attrs = meta.file_attributes();
             let logical = meta.len();
             // 仅特殊属性文件才拼路径并额外查询实占
-            msg.direct_bytes += allocated_size(&entry.path(), logical, attrs);
+            let allocated = allocated_size(&entry.path(), logical, attrs);
+            msg.direct_bytes += allocated;
             msg.file_count += 1;
+            if allocated >= BIG_FILE_MIN {
+                let mtime_ms = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                msg.big_files.push(BigFileRaw {
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    size: allocated,
+                    mtime_ms,
+                });
+            }
         }
     }
     msg
@@ -223,6 +260,7 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
     let mut files: u64 = 0;
     let mut bytes: u64 = 0;
     let mut denied: u64 = 0;
+    let mut big_files: Vec<BigFileEntry> = Vec::new();
     let mut last_emit = Instant::now();
     let mut cancelled = false;
 
@@ -268,6 +306,16 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
             files += msg.file_count;
             bytes += msg.direct_bytes;
             denied += msg.denied;
+            for bf in msg.big_files {
+                if big_files.len() < BIG_FILE_CAP {
+                    big_files.push(BigFileEntry {
+                        dir: msg.node_id,
+                        name: bf.name,
+                        size: bf.size,
+                        mtime_ms: bf.mtime_ms,
+                    });
+                }
+            }
             {
                 let n = &mut nodes[msg.node_id as usize];
                 n.total_bytes += msg.direct_bytes;
@@ -340,6 +388,7 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
         nodes,
         rules,
         root_path: root,
+        big_files,
     });
     // 新快照已含撤回目录的真实数据,补丁表作废
     state.reverted.lock().unwrap().clear();
@@ -397,6 +446,152 @@ pub fn cancel_scan(state: State<'_, ScanState>) {
     if state.running.load(Ordering::SeqCst) {
         state.cancel.store(true, Ordering::SeqCst);
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigFileInfo {
+    path: String,
+    name: String,
+    size_bytes: u64,
+    modified_ms: u64,
+    /// video | archive | installer | image | other
+    category: String,
+    deletable: bool,
+    /// 不可删时的白话解释(需求文档 F4:系统关键文件只展示不可删)
+    reason: Option<String>,
+}
+
+fn file_category(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "mp4" | "mkv" | "avi" | "mov" | "flv" | "wmv" | "ts" | "webm" | "m4v" | "rmvb" => "video",
+        "zip" | "rar" | "7z" | "tar" | "gz" | "xz" | "bz2" | "cab" => "archive",
+        "exe" | "msi" | "msix" | "appx" => "installer",
+        "iso" | "img" | "vhd" | "vhdx" | "wim" | "esd" | "gho" => "image",
+        _ => "other",
+    }
+}
+
+/// 系统关键文件判定:(不可删, 白话原因)
+fn deletability(name_lower: &str, path_lower: &str, windir_lower: &str) -> (bool, Option<String>) {
+    if matches!(name_lower, "pagefile.sys" | "hiberfil.sys" | "swapfile.sys") {
+        return (
+            false,
+            Some("这是系统的虚拟内存/休眠文件,不能直接删。想减小它需要在系统设置里调整".into()),
+        );
+    }
+    if path_lower.starts_with(&format!("{windir_lower}\\")) {
+        return (false, Some("这是 Windows 系统文件,删了系统可能出问题,只看不动".into()));
+    }
+    (true, None)
+}
+
+/// 大文件列表(F4)。对 F2/F3 已覆盖的路径去重——那些空间已计入
+/// 「垃圾清理」或「可搬家」,再列一遍会双重计数(需求文档 §3.5)。
+#[tauri::command]
+pub fn get_big_files(state: State<'_, ScanState>) -> Result<Vec<BigFileInfo>, String> {
+    let guard = state.result.lock().map_err(|e| e.to_string())?;
+    let scan = guard.as_ref().ok_or("尚未完成扫描")?;
+    let covered: Vec<String> = scan
+        .rules
+        .iter()
+        .filter(|r| r.action == "clean" || r.action == "migrate")
+        .filter_map(|r| expand_pattern(&r.path_pattern))
+        .map(|p| format!("{}\\", p.to_string_lossy().to_lowercase()))
+        .collect();
+    let windir = std::env::var("WINDIR")
+        .unwrap_or_else(|_| "C:\\Windows".into())
+        .to_lowercase();
+    let mut out: Vec<BigFileInfo> = Vec::new();
+    for bf in &scan.big_files {
+        let path = node_path(scan, bf.dir).join(&bf.name);
+        let lower = path.to_string_lossy().to_lowercase();
+        if covered.iter().any(|c| lower.starts_with(c.as_str())) {
+            continue;
+        }
+        let name_lower = bf.name.to_lowercase();
+        let (deletable, reason) = deletability(&name_lower, &lower, &windir);
+        out.push(BigFileInfo {
+            path: path.to_string_lossy().into_owned(),
+            name: bf.name.clone(),
+            size_bytes: bf.size,
+            modified_ms: bf.mtime_ms,
+            category: file_category(&bf.name).to_string(),
+            deletable,
+            reason,
+        });
+    }
+    out.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    Ok(out)
+}
+
+/// 进回收站删除(FOF_ALLOWUNDO),保留反悔余地(需求文档 F4 安全)
+fn recycle_delete(p: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+        FO_DELETE, SHFILEOPSTRUCTW,
+    };
+    // pFrom 要求双 \0 结尾的路径列表
+    let mut from: Vec<u16> = p.as_os_str().encode_wide().collect();
+    from.push(0);
+    from.push(0);
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: std::ptr::null(),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI) as u16,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+    let rc = unsafe { SHFileOperationW(&mut op) };
+    if rc != 0 {
+        return Err(format!("删除没有成功(代码 {rc}),文件可能正被使用"));
+    }
+    if op.fAnyOperationsAborted != 0 {
+        return Err("删除被中止,文件没有变化".into());
+    }
+    Ok(())
+}
+
+/// 删除大文件。双防线:①路径必须是本次扫描收录的大文件(接口层面杜绝
+/// 任意路径删除);②系统关键文件复核拒绝——前端置灰只是第一道。
+#[tauri::command]
+pub async fn delete_big_file(app: AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<ScanState>();
+        let guard = state.result.lock().map_err(|e| e.to_string())?;
+        let scan = guard.as_ref().ok_or("尚未完成扫描")?;
+        let lower = path.to_lowercase();
+        let known = scan.big_files.iter().any(|bf| {
+            node_path(scan, bf.dir)
+                .join(&bf.name)
+                .to_string_lossy()
+                .to_lowercase()
+                == lower
+        });
+        if !known {
+            return Err("这个文件不在本次体检的大文件列表里,拒绝删除".into());
+        }
+        let windir = std::env::var("WINDIR")
+            .unwrap_or_else(|_| "C:\\Windows".into())
+            .to_lowercase();
+        let name_lower = Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let (deletable, _) = deletability(&name_lower, &lower, &windir);
+        if !deletable {
+            return Err("系统文件不能删除".into());
+        }
+        drop(guard);
+        recycle_delete(Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]

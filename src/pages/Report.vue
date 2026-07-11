@@ -4,12 +4,14 @@ import { useRouter } from "vue-router";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   checkLocks,
+  getBigFiles,
   getMigratables,
   onCleanProgress,
   runClean,
   scanCleanables,
 } from "../api";
 import type {
+  BigFileInfo,
   CleanableItem,
   CleanablesReport,
   CleanResult,
@@ -22,6 +24,7 @@ const router = useRouter();
 
 const report = ref<CleanablesReport | null>(null);
 const migratables = ref<MigratableItem[]>([]);
+const bigFiles = ref<BigFileInfo[]>([]);
 const phase = ref<"loading" | "ready" | "cleaning" | "done">("loading");
 const showDetail = ref(false);
 const checked = ref<Record<string, boolean>>({});
@@ -36,6 +39,7 @@ const junkTotal = computed(() => items.value.reduce((s, i) => s + i.sizeBytes, 0
 const migrateTotal = computed(() => migratables.value.reduce((s, i) => s + i.sizeBytes, 0));
 /* 「预计可释放」只计垃圾 + 可搬家,大文件待用户决定不并入(设计规范 §3.2) */
 const releasable = computed(() => junkTotal.value + migrateTotal.value);
+const bigTotal = computed(() => bigFiles.value.reduce((s, f) => s + f.sizeBytes, 0));
 
 function isDisabled(item: CleanableItem): boolean {
   if (item.lockedBy.length > 0) return true;
@@ -75,12 +79,14 @@ function badge(item: CleanableItem): Badge {
 }
 
 async function loadReport() {
-  const [clean, mig] = await Promise.all([
+  const [clean, mig, big] = await Promise.all([
     scanCleanables(),
     getMigratables().catch(() => [] as MigratableItem[]),
+    getBigFiles().catch(() => [] as BigFileInfo[]),
   ]);
   report.value = clean;
   migratables.value = mig;
+  bigFiles.value = big;
   /* 默认勾选:放心删 + 有代价;谨慎级和被禁用项不勾(需求文档 F2 分级) */
   const next: Record<string, boolean> = {};
   for (const item of clean.items) {
@@ -209,11 +215,15 @@ async function startClean() {
             <span class="card-size num">{{ fmtBytes(migrateTotal) }}</span>
             <span class="card-note link-note">去搬家 ›</span>
           </button>
-          <div class="card">
+          <button class="card clickable" @click="router.push('/bigfiles')">
             <span class="card-name">大文件</span>
-            <span class="card-size">—</span>
-            <span class="card-note">即将上线,待你决定</span>
-          </div>
+            <span class="card-size num">{{
+              bigFiles.length > 0 ? fmtBytes(bigTotal) : "—"
+            }}</span>
+            <span class="card-note link-note">{{
+              bigFiles.length > 0 ? `${bigFiles.length} 个 · 待你决定 ›` : "去看看 ›"
+            }}</span>
+          </button>
         </section>
 
         <!-- 清理中:进度可感知(>300ms 必须有反馈,设计规范 §6) -->

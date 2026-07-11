@@ -130,3 +130,16 @@ export interface MigrateResult {
   fileCount: number;
   dst: string;
 }
+
+export type FileCategory = "video" | "archive" | "installer" | "image" | "other";
+
+export interface BigFileInfo {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  modifiedMs: number;
+  category: FileCategory;
+  deletable: boolean;
+  /** 不可删时的白话解释 */
+  reason: string | null;
+}

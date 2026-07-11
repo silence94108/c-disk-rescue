@@ -4,6 +4,7 @@ import Report from "./pages/Report.vue";
 import SpaceMap from "./pages/SpaceMap.vue";
 import Migrate from "./pages/Migrate.vue";
 import Moved from "./pages/Moved.vue";
+import BigFiles from "./pages/BigFiles.vue";
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -13,5 +14,6 @@ export const router = createRouter({
     { path: "/map", component: SpaceMap },
     { path: "/migrate", component: Migrate },
     { path: "/moved", component: Moved },
+    { path: "/bigfiles", component: BigFiles },
   ],
 });

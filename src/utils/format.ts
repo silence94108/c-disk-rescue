@@ -17,3 +17,10 @@ export function fmtRelativeTime(ts: number): string {
   if (days === 1) return "昨天";
   return `${days} 天前`;
 }
+
+export function fmtDate(ts: number): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
