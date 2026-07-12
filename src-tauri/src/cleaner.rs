@@ -23,6 +23,8 @@ pub struct CleanableItem {
     /// safe | cost | caution
     risk: String,
     needs_admin: bool,
+    /// 引导型:工具不代删,explain 教手动操作;前端默认不勾且禁用勾选
+    guide_only: bool,
     path: String,
     size_bytes: u64,
     file_count: u64,
@@ -408,6 +410,7 @@ pub async fn scan_cleanables(app: AppHandle) -> Result<CleanablesReport, String>
                     explain: rule.explain,
                     risk: rule.risk,
                     needs_admin: rule.needs_admin,
+                    guide_only: rule.guide_only,
                     path: "回收站".into(),
                     size_bytes: bytes,
                     file_count: count,
@@ -437,6 +440,7 @@ pub async fn scan_cleanables(app: AppHandle) -> Result<CleanablesReport, String>
                     explain: rule.explain,
                     risk: rule.risk,
                     needs_admin: rule.needs_admin,
+                    guide_only: rule.guide_only,
                     path: path.to_string_lossy().into_owned(),
                     size_bytes: bytes,
                     file_count: files,
@@ -630,21 +634,13 @@ fn do_clean(app: &AppHandle, rule_ids: Vec<String>) -> CleanResult {
             });
             continue;
         }
-        // Windows.old 归 TrustedInstaller 所有,直接删会大量失败,
-        // 须走系统清理接口(M4 实现),现阶段只展示不执行
-        if rule.id == "windows-old" {
+        // 引导型项(Windows.old/驱动仓库等)不由本工具删除——DriverStore 在用
+        // 与废弃驱动同层混放、Windows.old 归 TrustedInstaller,逐文件删会出事。
+        // 前端已禁勾,此处是最后防线
+        if rule.guide_only {
             total.skipped.push(SkippedRule {
                 rule_id: rule.id,
-                reason: "此项将在后续版本通过系统清理接口支持".into(),
-            });
-            continue;
-        }
-        // DriverStore 里在用驱动与废弃旧驱动混在同层,逐文件删会删坏在用驱动,
-        // 必须由系统(pnputil/cleanmgr)判定孤儿包。只展示 + explain 教手动清理
-        if rule.id == "driver-packages" {
-            total.skipped.push(SkippedRule {
-                rule_id: rule.id,
-                reason: "此项请按说明用系统自带的「磁盘清理」处理,更安全".into(),
+                reason: "此项不由本工具直接删除,请按卡片上的说明手动处理".into(),
             });
             continue;
         }

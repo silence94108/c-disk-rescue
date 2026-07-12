@@ -60,6 +60,8 @@ export interface CleanableItem {
   explain: string;
   risk: Risk;
   needsAdmin: boolean;
+  /** 引导型:工具不代删,explain 教手动操作;默认不勾且禁用勾选 */
+  guideOnly: boolean;
   path: string;
   sizeBytes: number;
   fileCount: number;

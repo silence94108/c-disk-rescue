@@ -18,6 +18,10 @@ pub struct Rule {
     /// 需要管理员权限的清理项,普通权限下置灰展示(需求文档 §3.5 权限矩阵)
     #[serde(default)]
     pub needs_admin: bool,
+    /// 引导型清理项:本工具不代删,explain 教用户手动操作。
+    /// 前端默认不勾且禁用勾选(数字承诺才真实);后端执行时无条件跳过(最后防线)
+    #[serde(default)]
+    pub guide_only: bool,
     #[serde(default)]
     pub related_processes: Vec<String>,
     /// clean | migrate | guide

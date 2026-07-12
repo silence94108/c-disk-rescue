@@ -53,6 +53,7 @@ const releasable = computed(() => junkTotal.value + migrateTotal.value);
 const bigTotal = computed(() => bigFiles.value.reduce((s, f) => s + f.sizeBytes, 0));
 
 function isDisabled(item: CleanableItem): boolean {
+  if (item.guideOnly) return true;
   if (item.lockedBy.length > 0) return true;
   if (item.needsAdmin && !report.value?.isElevated) return true;
   return false;
@@ -76,6 +77,9 @@ interface Badge {
 }
 
 function badge(item: CleanableItem): Badge {
+  /* 引导型优先:它不参与执行,权限/占用状态都与它无关 */
+  if (item.guideOnly)
+    return { icon: "🔵", text: "本工具不代删,按上面的方法手动清理更安全", cls: "guide" };
   if (item.lockedBy.length > 0)
     return {
       icon: "⚪",
@@ -322,7 +326,7 @@ async function deleteOrphans() {
             v-for="item in items"
             :key="item.ruleId"
             class="item"
-            :class="{ disabled: isDisabled(item) }"
+            :class="{ disabled: isDisabled(item) && !item.guideOnly }"
             :title="item.path"
           >
             <input
@@ -629,6 +633,10 @@ async function deleteOrphans() {
 
 .item-badge.gray {
   color: var(--color-text-secondary);
+}
+
+.item-badge.guide {
+  color: var(--color-primary);
 }
 
 .result-card {
