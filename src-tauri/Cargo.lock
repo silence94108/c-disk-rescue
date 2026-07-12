@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "c-disk-rescue"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "crossbeam-channel",

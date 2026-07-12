@@ -1,6 +1,6 @@
 [package]
 name = "c-disk-rescue"
-version = "0.1.0"
+version = "0.1.2"
 description = "免费、无捆绑、傻瓜式的 C 盘空间治理工具"
 authors = ["Silence_"]
 edition = "2021"
