@@ -55,10 +55,12 @@ jobs:
       # 顺带把免安装「便捷版」(裸 exe)也传到同一个 Release,
       # 下载页于是同时有:安装版 setup.exe 和便捷版 portable.exe
       - name: 附带上传免安装便捷版
-        shell: bash
+        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ver=$(node -p "require('./package.json').version")
-          cp "src-tauri/target/release/c-disk-rescue.exe" "c-disk-rescue_${ver}_x64-portable.exe"
-          gh release upload "v${ver}" "c-disk-rescue_${ver}_x64-portable.exe" --clobber
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $ver = $conf.version
+          $dst = "$($conf.productName)_${ver}_x64-portable.exe"
+          Copy-Item "src-tauri/target/release/c-disk-rescue.exe" $dst
+          gh release upload "v$ver" $dst --clobber
