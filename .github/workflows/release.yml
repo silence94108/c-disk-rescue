@@ -1,0 +1,53 @@
+name: 发布安装包
+
+# 打 v 开头的 tag(如 v0.1.0)时自动触发;也可在 Actions 页手动触发。
+# 产物是 Windows 安装包(NSIS setup.exe + MSI),自动发布为「草稿 Release」,
+# 维护者审核后手动 Publish 即对外可下载。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write # 创建 Release、上传安装包所需
+    runs-on: windows-latest # C盘救星是 Windows 工具,只在 Windows 上构建
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust 编译缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建并发布安装包
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # tag 触发时用该 tag;手动触发时回退到 tauri.conf.json 的版本号
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: "C盘救星 __VERSION__"
+          releaseBody: |
+            从下面 **Assets** 里下载 `c-disk-rescue_*_x64-setup.exe`,双击安装即可。
+
+            - 系统要求:Windows 10 1809+ / Windows 11,x64
+            - 首次运行若弹「Windows 已保护你的电脑」,点「更多信息」→「仍要运行」
+              (安装包暂未做数字签名,见 README)
+          releaseDraft: true # 先发草稿,维护者审核后手动 Publish
+          prerelease: false
+          includeUpdaterJson: false
