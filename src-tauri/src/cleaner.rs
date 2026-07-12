@@ -469,9 +469,29 @@ pub struct LockStatus {
 /// 报告页与搬家向导轮询用——用户退出软件后自动解锁/亮起下一步
 /// (设计规范 §3.4「检测到进程退出后自动亮起」)。
 #[tauri::command]
-pub async fn check_locks(rule_ids: Vec<String>) -> Result<Vec<LockStatus>, String> {
+pub async fn check_locks(app: AppHandle, rule_ids: Vec<String>) -> Result<Vec<LockStatus>, String> {
+    // pick: 自选候选的真实路径先从白名单取好(State 不跨线程,在 spawn_blocking 外锁一次)
+    let mut pick_paths: Vec<(String, PathBuf)> = Vec::new();
+    {
+        let state = app.state::<crate::scan::ScanState>();
+        let map = state.candidates.lock().map_err(|e| e.to_string())?;
+        for id in &rule_ids {
+            if let Some(p) = map.get(id) {
+                pick_paths.push((id.clone(), p.clone()));
+            }
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let mut out = Vec::new();
+        // 自选候选:任意路径都用 Restart Manager 检测锁,不依赖 related_processes
+        for (id, path) in pick_paths {
+            if path.is_dir() {
+                out.push(LockStatus {
+                    rule_id: id,
+                    locked_by: who_locks(&sample_files(&path, 64)),
+                });
+            }
+        }
         for rule in load_rules()
             .into_iter()
             .filter(|r| rule_ids.iter().any(|id| id == &r.id))

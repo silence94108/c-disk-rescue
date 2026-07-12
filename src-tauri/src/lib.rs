@@ -18,6 +18,7 @@ pub fn run() {
             scan::get_children,
             scan::get_migratables,
             scan::get_capacity_breakdown,
+            scan::get_migrate_candidates,
             scan::get_big_files,
             scan::delete_big_file,
             scan::get_orphan_profiles,

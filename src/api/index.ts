@@ -9,6 +9,7 @@ import type {
   DiskInfo,
   LockStatus,
   MigratableItem,
+  MigrateCandidatesReport,
   MigrateProgress,
   MigrateRecord,
   MigrateResult,
@@ -30,6 +31,9 @@ export const getChildren = (nodeId: number) =>
   invoke<TreeNode[]>("get_children", { nodeId });
 
 export const getMigratables = () => invoke<MigratableItem[]>("get_migratables");
+
+export const getMigrateCandidates = () =>
+  invoke<MigrateCandidatesReport>("get_migrate_candidates");
 
 export const getCapacityBreakdown = () =>
   invoke<CapacityBreakdown>("get_capacity_breakdown");

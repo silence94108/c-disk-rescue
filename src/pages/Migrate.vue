@@ -2,23 +2,33 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   checkLocks,
   confirmMigration,
   getMigratables,
+  getMigrateCandidates,
   getMigrateTargets,
   onMigrateProgress,
   requestClose,
   startMigrate,
   cancelMigrate,
 } from "../api";
-import type { MigratableItem, MigrateProgress, TargetDisk } from "../api/types";
+import type {
+  KnownFolderInfo,
+  MigratableItem,
+  MigrateCandidate,
+  MigrateProgress,
+  TargetDisk,
+} from "../api/types";
 import { scanSummary } from "../store";
 import { fmtBytes } from "../utils/format";
 
 const router = useRouter();
 
 const items = ref<MigratableItem[]>([]);
+const candidates = ref<MigrateCandidate[]>([]);
+const knownFolders = ref<KnownFolderInfo[]>([]);
 const targets = ref<TargetDisk[]>([]);
 const chosenTarget = ref<string>("");
 const loading = ref(true);
@@ -26,9 +36,15 @@ const notice = ref("");
 
 const hasScan = computed(() => !!scanSummary.value);
 
+/* 搬家目标(ruleId 对 KB 项、pick:<hash> 对自选项,后端统一解析) */
+interface Target {
+  ruleId: string;
+  displayName: string;
+}
+
 /* 向导状态机:idle=列表 / waiting=请退出软件 / moving=搬家中 / done=完成 */
 const wizard = ref<"idle" | "waiting" | "moving" | "done">("idle");
-const active = ref<MigratableItem | null>(null);
+const active = ref<Target | null>(null);
 const lockedBy = ref<string[]>([]);
 const closing = ref(false);
 const progress = ref<MigrateProgress | null>(null);
@@ -49,8 +65,14 @@ onMounted(async () => {
     return;
   }
   try {
-    const [mig, tgs] = await Promise.all([getMigratables(), getMigrateTargets()]);
+    const [mig, cand, tgs] = await Promise.all([
+      getMigratables(),
+      getMigrateCandidates().catch(() => ({ candidates: [], knownFolders: [] })),
+      getMigrateTargets(),
+    ]);
     items.value = mig;
+    candidates.value = cand.candidates;
+    knownFolders.value = cand.knownFolders;
     targets.value = tgs;
     chosenTarget.value = tgs.find((t) => t.recommended)?.mountPoint ?? "";
   } finally {
@@ -71,15 +93,15 @@ function stopLockPolling() {
 }
 
 /* 第一步:占用检查。有锁 → 停在「请退出」页轮询;无锁 → 直接开搬 */
-async function begin(item: MigratableItem) {
+async function begin(ruleId: string, displayName: string) {
   if (!chosenTarget.value) {
     notice.value = "没有找到能用的目标盘(需要一块 NTFS 格式的本地硬盘)";
     return;
   }
   notice.value = "";
-  active.value = item;
-  const st = await checkLocks([item.ruleId]).catch(() => []);
-  lockedBy.value = st.find((s) => s.ruleId === item.ruleId)?.lockedBy ?? [];
+  active.value = { ruleId, displayName };
+  const st = await checkLocks([ruleId]).catch(() => []);
+  lockedBy.value = st.find((s) => s.ruleId === ruleId)?.lockedBy ?? [];
   if (lockedBy.value.length === 0) {
     doMigrate();
     return;
@@ -106,6 +128,7 @@ async function helpClose() {
 
 async function doMigrate() {
   if (!active.value) return;
+  const finishedId = active.value.ruleId;
   stopLockPolling();
   wizard.value = "moving";
   progress.value = null;
@@ -116,6 +139,8 @@ async function doMigrate() {
     const result = await startMigrate(active.value.ruleId, chosenTarget.value);
     doneBytes.value = result.movedBytes;
     wizard.value = "done";
+    // 搬走的自选项从候选列表移除(它现在是联接了)
+    candidates.value = candidates.value.filter((c) => c.id !== finishedId);
   } catch (e) {
     // 失败文案的重点是安抚:后端已自动回滚,数据无变化(设计规范 §3.4)
     notice.value = String(e);
@@ -160,6 +185,22 @@ function closeWizard(refresh: boolean) {
 function cancelMoving() {
   cancelMigrate();
 }
+
+async function openFolder(path: string) {
+  try {
+    await revealItemInDir(path);
+  } catch {
+    notice.value = "没能打开这个文件夹";
+  }
+}
+
+const noTarget = computed(() => targets.value.length === 0 || !chosenTarget.value);
+const nothing = computed(
+  () =>
+    items.value.length === 0 &&
+    candidates.value.length === 0 &&
+    knownFolders.value.length === 0,
+);
 </script>
 
 <template>
@@ -186,7 +227,7 @@ function cancelMoving() {
       <p v-if="notice" class="notice">{{ notice }}</p>
 
       <p v-if="loading" class="empty">正在整理…</p>
-      <p v-else-if="items.length === 0" class="empty">
+      <p v-else-if="nothing" class="empty">
         没有找到可搬家的目录(微信、QQ 等装在本机才会出现)。
       </p>
 
@@ -212,7 +253,12 @@ function cancelMoving() {
           没有找到能用的目标盘——需要一块除 C 盘外的本地硬盘(U 盘和移动硬盘不行,拔掉后软件会打不开)。
         </p>
 
-        <section class="rcard">
+        <!-- 区一:推荐搬家(知识库命中,最稳) -->
+        <section class="rcard" v-if="items.length > 0">
+          <div class="sec-head">
+            <span class="sec-title">推荐搬家</span>
+            <span class="sec-sub">已识别的软件数据目录,搬家最稳妥</span>
+          </div>
           <div class="rows">
             <div v-for="item in items" :key="item.ruleId" class="row">
               <div class="ib">
@@ -221,14 +267,80 @@ function cancelMoving() {
                   <span class="sz num">{{ fmtBytes(item.sizeBytes) }}</span>
                 </div>
                 <p class="ex">{{ item.explain }}</p>
-                <p class="dest" v-if="chosenTarget">
-                  将搬到 {{ chosenTarget }}\AppDataMove\ ·
-                  搬家后极小概率软件大版本更新出问题,出问题可一键搬回
-                </p>
               </div>
-              <button class="btn item-btn" :disabled="!chosenTarget" @click="begin(item)">
+              <button
+                class="btn item-btn"
+                :disabled="noTarget"
+                @click="begin(item.ruleId, item.displayName)"
+              >
                 开始搬家
               </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 区二:大文件夹自选(知识库外,用户手动决定) -->
+        <section class="rcard" v-if="candidates.length > 0">
+          <div class="sec-head">
+            <span class="sec-title">大文件夹自选</span>
+            <span class="sec-sub">
+              体检发现的其他大文件夹,默认都不动;搬走的数据全程保留、可一键搬回。不认识的先别动。
+            </span>
+          </div>
+          <div class="rows">
+            <div
+              v-for="c in candidates"
+              :key="c.id"
+              class="row"
+              :class="{ off: c.status === 'blocked' }"
+              :title="c.path"
+            >
+              <div class="ib">
+                <div class="l1">
+                  <span class="nm">{{ c.name }}</span>
+                  <span class="sz num">{{ fmtBytes(c.sizeBytes) }}</span>
+                </div>
+                <p class="ex">{{ c.displayName }}</p>
+                <div class="tags">
+                  <span v-if="c.status === 'cautious'" class="bg caution">谨慎</span>
+                  <span v-if="c.note" class="note">{{ c.note }}</span>
+                  <button class="reveal" @click="openFolder(c.path)">打开位置看看 ›</button>
+                </div>
+              </div>
+              <button
+                v-if="c.status !== 'blocked'"
+                class="btn item-btn"
+                :class="{ ghosted: c.status === 'cautious' }"
+                :disabled="noTarget"
+                @click="begin(c.id, c.name)"
+              >
+                搬走它
+              </button>
+              <span v-else class="blocked-tag">不支持</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 区三:官方搬法(Known Folder 有官方位置重定向,junction 是错误工具) -->
+        <section class="rcard guide-sec" v-if="knownFolders.length > 0">
+          <div class="sec-head">
+            <span class="sec-title">这些用官方方法搬更好</span>
+            <span class="sec-sub">
+              下载、视频这类文件夹,Windows 自带更换位置的功能,比本工具更适合搬它们
+            </span>
+          </div>
+          <div class="rows">
+            <div v-for="k in knownFolders" :key="k.path" class="row">
+              <div class="ib">
+                <div class="l1">
+                  <span class="nm">「{{ k.name }}」文件夹</span>
+                  <span class="sz num">{{ fmtBytes(k.sizeBytes) }}</span>
+                </div>
+                <p class="ex">
+                  右键这个文件夹 →「属性」→「位置」→「移动」,选到其他盘即可,系统会自动搬好。
+                </p>
+                <button class="reveal" @click="openFolder(k.path)">打开这个文件夹 ›</button>
+              </div>
             </div>
           </div>
         </section>
@@ -240,7 +352,7 @@ function cancelMoving() {
       <div class="dialog">
         <!-- 步骤1:请退出软件 -->
         <template v-if="wizard === 'waiting'">
-          <p class="dlg-title">先退出{{ active.displayName.slice(0, 8) }}相关软件</p>
+          <p class="dlg-title">先退出{{ active.displayName.slice(0, 10) }}相关软件</p>
           <template v-if="lockedBy.length > 0">
             <p class="dlg-body">
               {{ lockedBy.join("、") }} 正在使用这些文件。请手动退出,或让我来:
@@ -251,7 +363,7 @@ function cancelMoving() {
             <p class="dlg-aux">退出后这里会自动亮起,不用刷新</p>
           </template>
           <template v-else>
-            <p class="dlg-body ok">✓ 软件已退出,可以开始搬家了</p>
+            <p class="dlg-body ok">✓ 没有软件占用,可以开始搬家了</p>
             <button class="btn wide" @click="doMigrate">开始搬家</button>
           </template>
           <button class="link" @click="closeWizard(false)">先不搬了</button>
@@ -277,12 +389,12 @@ function cancelMoving() {
           <p class="dlg-title ok">搬家完成!</p>
           <p class="dlg-body">
             数据已在 {{ chosenTarget }} 盘安家。现在打开{{
-              active.displayName.slice(0, 8)
+              active.displayName.slice(0, 10)
             }}试试——一切正常的话,点下面按钮删除 C 盘备份,才会真正腾出
             {{ fmtBytes(doneBytes) }}。
           </p>
           <button class="btn wide" :disabled="confirming" @click="confirmOk">
-            {{ confirming ? "正在删除备份…" : "软件打开正常,删除备份腾空间" }}
+            {{ confirming ? "正在删除备份…" : "打开正常,删除备份腾空间" }}
           </button>
           <button class="link" @click="later">稍后再说(备份先留着)</button>
         </template>
@@ -331,7 +443,7 @@ function cancelMoving() {
 .rcard {
   background: var(--color-card);
   border-radius: var(--radius-card);
-  padding: 10px 26px;
+  padding: 18px 26px;
   box-shadow: var(--shadow-card);
 }
 
@@ -340,6 +452,30 @@ function cancelMoving() {
   align-items: center;
   gap: 16px;
   padding: 24px 26px;
+}
+
+.guide-sec {
+  background: #f3f7ff;
+  border: 1px solid #dbe7fb;
+  box-shadow: none;
+}
+
+.sec-head {
+  margin-bottom: 8px;
+}
+
+.sec-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--color-text);
+}
+
+.sec-sub {
+  display: block;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+  line-height: 1.6;
 }
 
 .tile {
@@ -438,6 +574,10 @@ function cancelMoving() {
   border-top: none;
 }
 
+.row.off {
+  opacity: 0.62;
+}
+
 .ib {
   flex: 1;
   min-width: 0;
@@ -465,12 +605,47 @@ function cancelMoving() {
   margin: 2px 0;
 }
 
-.dest {
-  font-size: var(--font-size-aux);
+.tags {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.bg {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.bg.caution {
+  background: var(--pill-caution-bg);
+  color: var(--pill-caution-fg);
+}
+
+.note {
+  font-size: 12.5px;
   color: var(--color-text-secondary);
 }
 
-/* 主行动按钮:行动绿(设计规范 §4.2 改版:主按钮由蓝改绿) */
+.reveal {
+  font-size: 12.5px;
+  padding: 0;
+  color: var(--color-primary);
+}
+
+.blocked-tag {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  padding: 0 8px;
+}
+
+/* 主行动按钮:行动绿(设计规范 §4.2:主按钮由蓝改绿) */
 .btn {
   height: 44px;
   padding: 0 22px;
@@ -490,6 +665,17 @@ function cancelMoving() {
 .btn:disabled {
   background: #d1d5db;
   cursor: not-allowed;
+}
+
+/* 谨慎项按钮降一档视觉,不用满绿诱导 */
+.btn.ghosted {
+  background: var(--color-card);
+  color: var(--pill-caution-fg);
+  border: 1px solid var(--pill-caution-fg);
+}
+
+.btn.ghosted:hover:not(:disabled) {
+  background: #fff4ea;
 }
 
 .btn.wide {

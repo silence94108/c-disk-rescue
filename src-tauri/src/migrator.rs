@@ -312,15 +312,40 @@ pub async fn start_migrate(
     result
 }
 
+/// 解析搬家源:pick: 前缀走候选白名单(优化方案 §3.4),否则走知识库(现状)。
+/// 返回(源路径、展示名、写入历史记录的 rule_id)。二者都不接受前端直接传路径。
+fn resolve_migrate_source(
+    app: &AppHandle,
+    rule_id: &str,
+) -> Result<(PathBuf, String, String), String> {
+    if rule_id.starts_with("pick:") {
+        let path = {
+            let state = app.state::<crate::scan::ScanState>();
+            let map = state.candidates.lock().map_err(|e| e.to_string())?;
+            map.get(rule_id).cloned()
+        };
+        let path = path.ok_or("这个文件夹不在本次识别的可搬列表里,重新体检一下再试")?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "所选文件夹".into());
+        Ok((path, name, rule_id.to_string()))
+    } else {
+        let rule = load_rules()
+            .into_iter()
+            .find(|r| r.id == rule_id && r.action == "migrate")
+            .ok_or("未知的搬家项")?;
+        let src = expand_pattern(&rule.path_pattern).ok_or("路径解析失败")?;
+        Ok((src, rule.display_name, rule.id))
+    }
+}
+
 fn do_migrate(app: &AppHandle, rule_id: &str, target_root: &str) -> Result<MigrateResult, String> {
     let state = app.state::<MigrateState>();
 
-    // 白名单原则:路径只从知识库展开,不接受前端传路径(接口形状即安全边界)
-    let rule = load_rules()
-        .into_iter()
-        .find(|r| r.id == rule_id && r.action == "migrate")
-        .ok_or("未知的搬家项")?;
-    let src = expand_pattern(&rule.path_pattern).ok_or("路径解析失败")?;
+    // 白名单原则:路径只从知识库或候选缓存取,不接受前端传路径(接口形状即安全边界)。
+    // pick: 前缀 = 自选搬家候选,从 ScanState.candidates 白名单查真实路径(优化方案 §3.4)。
+    let (src, display_name, rec_rule_id) = resolve_migrate_source(app, rule_id)?;
     if !src.is_dir() {
         return Err("这个目录不存在,可能软件已卸载".into());
     }
@@ -420,8 +445,8 @@ fn do_migrate(app: &AppHandle, rule_id: &str, target_root: &str) -> Result<Migra
     // ⑤ 落历史,事务完结
     let mut history = load_history(app);
     history.push(MigrateRecord {
-        rule_id: rule.id,
-        display_name: rule.display_name,
+        rule_id: rec_rule_id,
+        display_name,
         src: tx.src,
         dst: tx.dst.clone(),
         bak: Some(tx.bak),
@@ -572,13 +597,31 @@ fn remove_history_by_src(app: &AppHandle, src: &str) {
 /// 轮询等待文件锁释放。绝不 TerminateProcess——强杀正在写数据库的进程
 /// 会损坏用户数据(需求文档 F2 红线)。返回超时后仍在锁定的软件名(空 = 成功)。
 #[tauri::command]
-pub async fn request_close(rule_id: String) -> Result<Vec<String>, String> {
+pub async fn request_close(app: AppHandle, rule_id: String) -> Result<Vec<String>, String> {
+    // pick: 候选路径先在白名单里查好,再进阻塞线程(State 不跨线程)
+    let pick_path = if rule_id.starts_with("pick:") {
+        let p = app
+            .state::<crate::scan::ScanState>()
+            .candidates
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&rule_id)
+            .cloned();
+        Some(p.ok_or("这个文件夹不在本次识别的可搬列表里")?)
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        let rule = load_rules()
-            .into_iter()
-            .find(|r| r.id == rule_id)
-            .ok_or("未知的项目")?;
-        let path = expand_pattern(&rule.path_pattern).ok_or("路径解析失败")?;
+        let path = match pick_path {
+            Some(p) => p,
+            None => {
+                let rule = load_rules()
+                    .into_iter()
+                    .find(|r| r.id == rule_id)
+                    .ok_or("未知的项目")?;
+                expand_pattern(&rule.path_pattern).ok_or("路径解析失败")?
+            }
+        };
         if !path.is_dir() {
             return Ok(Vec::new());
         }

@@ -54,6 +54,31 @@ export interface MigratableItem {
   sizeBytes: number;
 }
 
+/** 自选搬家候选(知识库外的大文件夹,用户手动决定是否搬) */
+export interface MigrateCandidate {
+  id: string;
+  name: string;
+  path: string;
+  displayName: string;
+  sizeBytes: number;
+  fileCount: number;
+  /** safe 可搬 / cautious 可搬但谨慎 / blocked 不给搬 */
+  status: "safe" | "cautious" | "blocked";
+  note: string;
+}
+
+/** 自带官方「更改位置」入口的系统文件夹,出引导卡教官方搬法 */
+export interface KnownFolderInfo {
+  name: string;
+  path: string;
+  sizeBytes: number;
+}
+
+export interface MigrateCandidatesReport {
+  candidates: MigrateCandidate[];
+  knownFolders: KnownFolderInfo[];
+}
+
 export interface CleanableItem {
   ruleId: string;
   displayName: string;
