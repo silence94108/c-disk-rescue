@@ -1,0 +1,95 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- C盘救星 应用图标 · 视觉语言取自 docs/ui-redesign.html「F · 清透卡片」:
+       渐变 #7db4ff→#1a6ef5 / 等距硬盘 / 行动绿 #0eaf6d(设计规范 §4.2)
+       光照:左上光源,顶面最亮、左前面中间调、右前面背光压暗,棱边高光 + 底边收暗 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="1" stop-color="#1a6ef5"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.2" cy="0.12" r="0.8">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.45" stop-color="#0a3fb0" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#0a3fb0" stop-opacity="0"/>
+    </radialGradient>
+    <!-- 三面光照渐变 -->
+    <linearGradient id="topG" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fafcff"/>
+      <stop offset="1" stop-color="#d7e6fb"/>
+    </linearGradient>
+    <linearGradient id="leftG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b0cef7"/>
+      <stop offset="1" stop-color="#8bb0eb"/>
+    </linearGradient>
+    <linearGradient id="rightG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ea5e9"/>
+      <stop offset="1" stop-color="#5c88da"/>
+    </linearGradient>
+    <linearGradient id="diskG" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e6effd"/>
+    </linearGradient>
+    <linearGradient id="coreG" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f8"/>
+      <stop offset="1" stop-color="#1558d6"/>
+    </linearGradient>
+    <!-- 盒子外轮廓:六角 r=7 圆角六边形,整体裁切(厚度加到 28) -->
+    <clipPath id="box">
+      <path d="M48.26 66.87 L93.74 44.13 Q100 41 106.26 44.13 L151.74 66.87 Q158 70 158 77
+               L158 91 Q158 98 151.74 101.13 L106.26 123.87 Q100 127 93.74 123.87
+               L48.26 101.13 Q42 98 42 91 L42 77 Q42 70 48.26 66.87 Z"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="224" fill="url(#glow)"/>
+
+  <!-- 氛围浮点 -->
+  <circle cx="150" cy="190" r="13" fill="#ffffff" opacity="0.26"/>
+  <circle cx="872" cy="224" r="10" fill="#ffffff" opacity="0.2"/>
+  <circle cx="140" cy="470" r="7" fill="#ffffff" opacity="0.16"/>
+
+  <!-- 等距硬盘(2:1 等距,顶面菱形 42..158 × 41..99,厚 28) -->
+  <g transform="translate(-68 -30) scale(5.8)">
+    <ellipse cx="100" cy="130" rx="64" ry="13" fill="url(#shadow)"/>
+    <g clip-path="url(#box)">
+      <!-- 三面:尖角几何无缝拼合,光照由渐变承担 -->
+      <path d="M42 70 L100 99 L100 127 L42 98 Z" fill="url(#leftG)"/>
+      <path d="M158 70 L100 99 L100 127 L158 98 Z" fill="url(#rightG)"/>
+      <path d="M42 70 L100 41 L158 70 L100 99 Z" fill="url(#topG)"/>
+      <!-- 棱边光:受光后棱最亮、前棱次之、左右竖棱与中棱微光、底边收暗(线心在轮廓上,被裁剩内半条) -->
+      <path d="M42 70 L100 41 L158 70" stroke="#ffffff" stroke-width="1.6" opacity="0.75" fill="none"/>
+      <path d="M42 70 L100 99 L158 70" stroke="#ffffff" stroke-width="1.4" opacity="0.55" fill="none"/>
+      <path d="M42 70 L42 98 M158 70 L158 98" stroke="#ffffff" stroke-width="1.2" opacity="0.3" fill="none"/>
+      <path d="M100 99 L100 127" stroke="#ffffff" stroke-width="1.1" opacity="0.28" fill="none"/>
+      <path d="M42 98 L100 127 L158 98" stroke="#3f6dc4" stroke-width="1.8" opacity="0.35" fill="none"/>
+    </g>
+    <!-- 盘面 -->
+    <ellipse cx="100" cy="70" rx="33" ry="16.5" fill="url(#diskG)"/>
+    <ellipse cx="100" cy="70" rx="19" ry="9.5" fill="#d3e4fa"/>
+    <ellipse cx="100" cy="70" rx="14.5" ry="7.3" fill="url(#coreG)"/>
+    <!-- 白色 C:等距贴合盘面,开口顺右下棱方向(弧线 path,保证 resvg 可渲染) -->
+    <g transform="translate(100 70) scale(1 0.5) rotate(45)">
+      <path d="M3.47 -4.14 A5.4 5.4 0 1 0 3.47 4.14" stroke="#ffffff" stroke-width="3.4"
+            stroke-linecap="round" fill="none"/>
+    </g>
+    <!-- 机身指示灯(左前面) -->
+    <path d="M52 86 l11 5.6 v6 l-11 -5.6 Z" fill="#ffffff" opacity="0.92"/>
+    <path d="M67 93.5 l8 4 v5.5 l-8 -4 Z" fill="#dcebfe" opacity="0.9"/>
+  </g>
+
+  <!-- 左下小立方体(同款光照) -->
+  <g transform="translate(96 730) scale(2.8)" opacity="0.85">
+    <path d="M0 6 L10 0 L20 6 L10 12 Z" fill="#f4f9ff"/>
+    <path d="M0 6 L10 12 V22 L0 16 Z" fill="#a5c7f5"/>
+    <path d="M20 6 L10 12 V22 L20 16 Z" fill="#6f9ae4"/>
+  </g>
+
+  <!-- 行动绿救援徽章:贴住硬盘右下缘(设计规范 §4.2 行动绿) -->
+  <circle cx="753" cy="684" r="90" fill="#0eaf6d" stroke="#ffffff" stroke-width="20"/>
+  <path d="M709 685 L741 718 L798 652" stroke="#ffffff" stroke-width="27"
+        stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
