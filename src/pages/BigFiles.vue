@@ -20,6 +20,8 @@ const recycled = ref(0);
 const emptying = ref(false);
 const notice = ref("");
 
+const hasScan = computed(() => !!scanSummary.value);
+
 const HUGE = 2 * 1024 ** 3;
 
 const CATS: { key: "all" | FileCategory; label: string }[] = [
@@ -32,11 +34,11 @@ const CATS: { key: "all" | FileCategory; label: string }[] = [
 ];
 
 const CAT_ICON: Record<FileCategory, string> = {
-  video: "🎬",
-  archive: "🗜️",
-  installer: "📦",
-  image: "💿",
-  other: "📄",
+  video: "#i-video",
+  archive: "#i-zip",
+  installer: "#i-installer",
+  image: "#i-disc",
+  other: "#i-file",
 };
 
 const shown = computed(() =>
@@ -46,7 +48,7 @@ const totalBytes = computed(() => files.value.reduce((s, f) => s + f.sizeBytes, 
 
 onMounted(async () => {
   if (!scanSummary.value) {
-    router.replace("/");
+    loading.value = false;
     return;
   }
   try {
@@ -96,120 +98,179 @@ async function emptyRecycleBin() {
 </script>
 
 <template>
-  <main class="big">
-    <header class="head">
-      <button class="back" @click="router.push('/report')">‹ 返回报告</button>
-      <div class="head-stat">
-        <span class="head-title">大文件排查</span>
-        <span class="head-sub num" v-if="!loading">
-          {{ files.length }} 个 100MB 以上的文件 · 共 {{ fmtBytes(totalBytes) }} · 删不删由你决定
-        </span>
+  <div class="page">
+    <!-- 未体检:引导回概览(侧栏时代页面常驻,不强制跳转) -->
+    <section class="rcard guide-card" v-if="!hasScan && !loading">
+      <span class="tile sm"><svg class="ic"><use href="#i-file" /></svg></span>
+      <div class="tx">
+        <b>先做一次体检</b>
+        <p>体检后这里会按大小列出 100MB 以上的文件,帮你找回被遗忘的空间</p>
       </div>
-    </header>
-
-    <!-- 回收站提示:进回收站 ≠ 释放空间,不讲明白用户会觉得工具无效(设计规范 §3.5) -->
-    <p v-if="recycled > 0" class="recycle-bar">
-      已移到回收站 {{ fmtBytes(recycled) }}(空间还没释放),清空回收站后才真正腾出来
-      <button class="mini-btn" :disabled="emptying" @click="emptyRecycleBin">
-        {{ emptying ? "正在清空…" : "立即清空" }}
-      </button>
-    </p>
-    <p v-if="notice" class="notice">{{ notice }}</p>
-
-    <div class="filters">
-      <button
-        v-for="c in CATS"
-        :key="c.key"
-        class="chip"
-        :class="{ on: filter === c.key }"
-        @click="filter = c.key"
-      >
-        {{ c.label }}
-      </button>
-    </div>
-
-    <p v-if="loading" class="empty">正在整理…</p>
-    <p v-else-if="shown.length === 0" class="empty">
-      没有找到 100MB 以上的大文件,你的 C 盘很干净。
-    </p>
-
-    <section class="list" v-else>
-      <div v-for="f in shown" :key="f.path" class="row" :title="f.path">
-        <span class="icon">{{ CAT_ICON[f.category] }}</span>
-        <div class="info">
-          <span class="name">{{ f.name }}</span>
-          <span class="path">{{ f.path }}</span>
-        </div>
-        <span class="mtime num">{{ fmtDate(f.modifiedMs) }}</span>
-        <span class="size num">{{ fmtBytes(f.sizeBytes) }}</span>
-
-        <div class="ops">
-          <button class="op" @click="reveal(f)">打开位置</button>
-
-          <template v-if="!f.deletable">
-            <span class="no-del" :title="f.reason ?? ''">不能删 ⓘ</span>
-          </template>
-          <template v-else-if="askDelete === f.path">
-            <!-- 超大文件可能放不进回收站转永久删除,红色二次确认(设计规范 §3.5) -->
-            <span class="ask" :class="{ danger: f.sizeBytes >= HUGE }">
-              {{
-                f.sizeBytes >= HUGE
-                  ? "这个文件太大可能放不进回收站,会被直接删除、无法找回,确定吗?"
-                  : "删除后可在回收站找回,确定吗?"
-              }}
-            </span>
-            <button
-              class="op del"
-              :class="{ danger: f.sizeBytes >= HUGE }"
-              :disabled="busy !== null"
-              @click="doDelete(f)"
-            >
-              {{ busy === f.path ? "删除中…" : f.sizeBytes >= HUGE ? "永久删除" : "删除" }}
-            </button>
-            <button class="op" @click="askDelete = null">先不删</button>
-          </template>
-          <button v-else class="op" :disabled="busy !== null" @click="askDelete = f.path">
-            删除
-          </button>
-        </div>
-      </div>
+      <button class="btn" @click="router.push('/')">去概览体检 ›</button>
     </section>
-  </main>
+
+    <template v-else>
+      <div class="phead">
+        <div class="ptitle">大文件</div>
+        <div class="psub num" v-if="!loading">
+          {{ files.length }} 个 100MB 以上的文件 · 共 {{ fmtBytes(totalBytes) }} · 删不删由你决定
+        </div>
+      </div>
+
+      <!-- 回收站提示:进回收站 ≠ 释放空间,不讲明白用户会觉得工具无效(设计规范 §3.5) -->
+      <p v-if="recycled > 0" class="recycle-bar">
+        已移到回收站 {{ fmtBytes(recycled) }}(空间还没释放),清空回收站后才真正腾出来
+        <button class="mini-btn" :disabled="emptying" @click="emptyRecycleBin">
+          {{ emptying ? "正在清空…" : "立即清空" }}
+        </button>
+      </p>
+      <p v-if="notice" class="notice">{{ notice }}</p>
+
+      <div class="filters">
+        <button
+          v-for="c in CATS"
+          :key="c.key"
+          class="chip"
+          :class="{ on: filter === c.key }"
+          @click="filter = c.key"
+        >
+          {{ c.label }}
+        </button>
+      </div>
+
+      <section class="rcard listcard">
+        <p v-if="loading" class="empty">正在整理…</p>
+        <p v-else-if="shown.length === 0" class="empty">
+          没有找到 100MB 以上的大文件,你的 C 盘很干净。
+        </p>
+        <div class="rows" v-else>
+          <div v-for="f in shown" :key="f.path" class="row" :title="f.path">
+            <span class="ficon"><svg class="ic"><use :href="CAT_ICON[f.category]" /></svg></span>
+            <div class="info">
+              <span class="name">{{ f.name }}</span>
+              <span class="path">{{ f.path }}</span>
+            </div>
+            <span class="mtime num">{{ fmtDate(f.modifiedMs) }}</span>
+            <span class="size num">{{ fmtBytes(f.sizeBytes) }}</span>
+
+            <div class="ops">
+              <button class="op" @click="reveal(f)">打开位置</button>
+
+              <template v-if="!f.deletable">
+                <span class="no-del" :title="f.reason ?? ''">不能删 ⓘ</span>
+              </template>
+              <template v-else-if="askDelete === f.path">
+                <!-- 超大文件可能放不进回收站转永久删除,红色二次确认(设计规范 §3.5) -->
+                <span class="ask" :class="{ danger: f.sizeBytes >= HUGE }">
+                  {{
+                    f.sizeBytes >= HUGE
+                      ? "这个文件太大可能放不进回收站,会被直接删除、无法找回,确定吗?"
+                      : "删除后可在回收站找回,确定吗?"
+                  }}
+                </span>
+                <button
+                  class="op del"
+                  :class="{ danger: f.sizeBytes >= HUGE }"
+                  :disabled="busy !== null"
+                  @click="doDelete(f)"
+                >
+                  {{ busy === f.path ? "删除中…" : f.sizeBytes >= HUGE ? "永久删除" : "删除" }}
+                </button>
+                <button class="op" @click="askDelete = null">先不删</button>
+              </template>
+              <button v-else class="op" :disabled="busy !== null" @click="askDelete = f.path">
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
+  </div>
 </template>
 
 <style scoped>
-.big {
-  height: 100%;
+.page {
   display: flex;
   flex-direction: column;
-  padding: 0 24px 24px;
+  gap: 12px;
+  height: 100%;
 }
 
-.head {
+.phead {
+  padding: 2px 4px 0;
+}
+
+.ptitle {
+  font-size: 21px;
+  font-weight: 900;
+  color: var(--color-text);
+}
+
+.psub {
+  font-size: 13.5px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+}
+
+.rcard {
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  padding: 24px 26px;
+  box-shadow: var(--shadow-card);
+}
+
+.guide-card {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 16px 0;
 }
 
-.back {
-  color: var(--color-primary);
-  font-size: var(--font-size-card-title);
+.tile {
+  border-radius: 13px;
+  background: #e2f6ec;
+  color: var(--color-action);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
 }
 
-.head-stat {
-  display: flex;
-  flex-direction: column;
+.tile.sm {
+  width: 46px;
+  height: 46px;
+  font-size: 22px;
 }
 
-.head-title {
-  font-size: var(--font-size-title);
-  font-weight: 600;
+.tx {
+  flex: 1;
+  min-width: 0;
 }
 
-.head-sub {
-  font-size: var(--font-size-aux);
+.tx b {
+  font-size: 19px;
+  font-weight: 900;
+  color: var(--color-text);
+}
+
+.tx p {
+  font-size: 13.5px;
   color: var(--color-text-secondary);
+  margin-top: 2px;
+}
+
+.btn {
+  height: 48px;
+  padding: 0 26px;
+  border-radius: 12px;
+  background: var(--color-action);
+  color: #fff;
+  font-size: 15.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--color-action-deep);
 }
 
 .recycle-bar {
@@ -217,38 +278,35 @@ async function emptyRecycleBin() {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  margin-bottom: 8px;
-  border-radius: 8px;
-  background: #fef3c7;
-  color: var(--color-warning);
+  border-radius: 10px;
+  background: var(--pill-cost-bg);
+  color: var(--pill-cost-fg);
 }
 
 .mini-btn {
   padding: 4px 12px;
   border-radius: 6px;
-  background: var(--color-warning);
+  background: var(--pill-cost-fg);
   color: #fff;
   font-weight: 600;
 }
 
 .notice {
   padding: 8px 14px;
-  margin-bottom: 8px;
-  border-radius: 8px;
-  background: #dcfce7;
-  color: var(--color-success);
+  border-radius: 10px;
+  background: var(--pill-safe-bg);
+  color: var(--pill-safe-fg);
 }
 
 .filters {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
 }
 
 .chip {
   padding: 6px 16px;
   border-radius: 999px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-line);
   background: var(--color-card);
   color: var(--color-text-secondary);
 }
@@ -259,29 +317,34 @@ async function emptyRecycleBin() {
   font-weight: 600;
 }
 
-.list {
+.listcard {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  background: var(--color-card);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  padding: 4px 0;
+  padding: 8px 18px;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
 }
 
 .row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 12px 4px;
+  border-top: 1px solid var(--color-line);
 }
 
-.row:last-child {
-  border-bottom: none;
+.rows .row:first-child {
+  border-top: none;
 }
 
-.icon {
+.ficon {
   font-size: 20px;
+  color: #8a93a6;
+  display: flex;
   flex-shrink: 0;
 }
 
@@ -293,7 +356,8 @@ async function emptyRecycleBin() {
 }
 
 .name {
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 14.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -318,7 +382,7 @@ async function emptyRecycleBin() {
   flex-shrink: 0;
   width: 80px;
   text-align: right;
-  font-weight: 700;
+  font-weight: 900;
 }
 
 .ops {
@@ -331,14 +395,14 @@ async function emptyRecycleBin() {
 
 .op {
   padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  border: 1px solid var(--color-line);
   background: var(--color-card);
 }
 
 .op.del {
-  color: var(--color-warning);
-  border-color: var(--color-warning);
+  color: var(--pill-cost-fg);
+  border-color: var(--pill-cost-fg);
 }
 
 .op.del.danger {
@@ -354,7 +418,7 @@ async function emptyRecycleBin() {
 
 .ask {
   font-size: var(--font-size-aux);
-  color: var(--color-warning);
+  color: var(--pill-cost-fg);
   max-width: 260px;
 }
 

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   BigFileInfo,
+  CapacityBreakdown,
   CleanablesReport,
   CleanProgress,
   CleanResult,
@@ -29,6 +30,9 @@ export const getChildren = (nodeId: number) =>
   invoke<TreeNode[]>("get_children", { nodeId });
 
 export const getMigratables = () => invoke<MigratableItem[]>("get_migratables");
+
+export const getCapacityBreakdown = () =>
+  invoke<CapacityBreakdown>("get_capacity_breakdown");
 
 export const getBigFiles = () => invoke<BigFileInfo[]>("get_big_files");
 

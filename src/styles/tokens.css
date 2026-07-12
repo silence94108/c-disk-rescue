@@ -1,15 +1,42 @@
-/* 设计 token —— 唯一取值来源:docs/设计规范.md §4(深色模式首版不做,变量已预留) */
+/* 设计 token —— 唯一取值来源:docs/设计规范.md §4 + docs/ui-redesign.html「F · 清透卡片」
+   (稿为视觉唯一准绳;主蓝按规范裁决条款沿用 #2563EB,稿中 #1A6EF5 视为同一蓝) */
 :root {
   --color-primary: #2563eb;
+  --color-primary-deep: #1d4ed8;
+  /* 行动绿:主行动按钮(开始体检、一键清理)= 可安全执行的正向操作 */
+  --color-action: #0eaf6d;
+  --color-action-deep: #0c9a5f;
   --color-success: #16a34a;
   --color-warning: #d97706;
   --color-danger: #dc2626;
-  --color-text: #1f2937;
-  --color-text-secondary: #6b7280;
-  --color-bg: #f9fafb;
+  --color-text: #141c2b;
+  --color-text-secondary: #7b8598;
+  --color-line: #e9eef6;
+  --color-bg: #f7fafe;
   --color-card: #ffffff;
-  --radius-card: 12px;
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --radius-card: 16px;
+  --shadow-card: 0 14px 34px -22px rgba(31, 66, 135, 0.22);
+
+  /* 环境底:浅蓝清透 + 角落柔光(F 稿 .win 背景) */
+  --bg-ambient:
+    radial-gradient(560px 300px at 88% -60px, #dcebfe, transparent 65%),
+    radial-gradient(480px 320px at -60px 105%, #dbe9fd, transparent 60%),
+    linear-gradient(155deg, #eef4fd, #f7fafe 55%, #eef3fb);
+
+  /* 分段容量条五段 */
+  --seg-system: #1b57c9;
+  --seg-apps: #3d8bfd;
+  --seg-junk: #f6921e;
+  --seg-other: #aab3c0;
+  --seg-free: #e7ecf3;
+
+  /* 安全三态药丸(浅底 + 深字) */
+  --pill-safe-bg: #e2f6ec;
+  --pill-safe-fg: #0b9d60;
+  --pill-cost-bg: #fdeeda;
+  --pill-cost-fg: #c56f0a;
+  --pill-caution-bg: #fdeada;
+  --pill-caution-fg: #ea580c;
 
   --font-size-hero: 32px;
   --font-size-title: 20px;
@@ -35,7 +62,7 @@ body {
   font-size: var(--font-size-body);
   line-height: 1.6;
   color: var(--color-text);
-  background: var(--color-bg);
+  background: var(--bg-ambient);
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }
@@ -49,4 +76,16 @@ button {
   border: none;
   cursor: pointer;
   background: none;
+}
+
+/* 线性描边图标(F 稿 svg.ic:stroke 1.9、圆角端点、随字号缩放) */
+svg.ic {
+  width: 1em;
+  height: 1em;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
 }

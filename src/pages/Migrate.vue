@@ -24,6 +24,8 @@ const chosenTarget = ref<string>("");
 const loading = ref(true);
 const notice = ref("");
 
+const hasScan = computed(() => !!scanSummary.value);
+
 /* 向导状态机:idle=列表 / waiting=请退出软件 / moving=搬家中 / done=完成 */
 const wizard = ref<"idle" | "waiting" | "moving" | "done">("idle");
 const active = ref<MigratableItem | null>(null);
@@ -43,7 +45,7 @@ const percent = computed(() => {
 
 onMounted(async () => {
   if (!scanSummary.value) {
-    router.replace("/");
+    loading.value = false;
     return;
   }
   try {
@@ -161,63 +163,76 @@ function cancelMoving() {
 </script>
 
 <template>
-  <main class="migrate">
-    <header class="head">
-      <button class="back" @click="router.push('/report')">‹ 返回报告</button>
-      <div class="head-stat">
-        <span class="head-title">搬家瘦身</span>
-        <span class="head-sub">把大目录搬到其他盘,原位置留一个「传送门」,软件照常使用</span>
+  <div class="page">
+    <!-- 未体检:引导回概览(侧栏时代页面常驻,不强制跳转) -->
+    <section class="rcard guide-card" v-if="!hasScan && !loading">
+      <span class="tile sm"><svg class="ic"><use href="#i-move" /></svg></span>
+      <div class="tx">
+        <b>先做一次体检</b>
+        <p>体检后这里会列出能搬到其他盘的大目录,原位置留「传送门」,软件照常使用</p>
       </div>
-      <button class="link moved-link" @click="router.push('/moved')">已搬家管理 ›</button>
-    </header>
-
-    <p v-if="notice" class="notice">{{ notice }}</p>
-
-    <p v-if="loading" class="empty">正在整理…</p>
-    <p v-else-if="items.length === 0" class="empty">
-      没有找到可搬家的目录(微信、QQ 等装在本机才会出现)。
-    </p>
+      <button class="btn" @click="router.push('/')">去概览体检 ›</button>
+    </section>
 
     <template v-else>
-      <!-- 目标盘选择:默认推荐剩余最大的 NTFS 本地盘 -->
-      <section class="targets" v-if="targets.length > 0">
-        <span class="targets-label">搬到:</span>
-        <button
-          v-for="t in targets"
-          :key="t.mountPoint"
-          class="target"
-          :class="{ chosen: t.mountPoint === chosenTarget, bad: !t.isNtfs }"
-          :disabled="!t.isNtfs"
-          :title="t.isNtfs ? '' : '这个盘不是 NTFS 格式,搬过去软件会出问题'"
-          @click="chosenTarget = t.mountPoint"
-        >
-          {{ t.mountPoint }}(剩 {{ fmtBytes(t.freeBytes) }})
-          <em v-if="t.recommended">推荐</em>
-          <em v-if="!t.isNtfs" class="bad-tag">不支持</em>
-        </button>
-      </section>
-      <p v-else class="notice">
-        没有找到能用的目标盘——需要一块除 C 盘外的本地硬盘(U 盘和移动硬盘不行,拔掉后软件会打不开)。
+      <div class="phead">
+        <div class="phead-l">
+          <div class="ptitle">搬家瘦身</div>
+          <div class="psub">把大目录搬到其他盘,原位置留一个「传送门」,软件照常使用</div>
+        </div>
+        <button class="link" @click="router.push('/moved')">已搬家管理 ›</button>
+      </div>
+
+      <p v-if="notice" class="notice">{{ notice }}</p>
+
+      <p v-if="loading" class="empty">正在整理…</p>
+      <p v-else-if="items.length === 0" class="empty">
+        没有找到可搬家的目录(微信、QQ 等装在本机才会出现)。
       </p>
 
-      <section class="list">
-        <div v-for="item in items" :key="item.ruleId" class="item">
-          <div class="item-body">
-            <div class="item-line1">
-              <span class="item-name">{{ item.displayName }}</span>
-              <span class="item-size num">{{ fmtBytes(item.sizeBytes) }}</span>
-            </div>
-            <p class="item-explain">{{ item.explain }}</p>
-            <p class="item-dest" v-if="chosenTarget">
-              将搬到 {{ chosenTarget }}\AppDataMove\ ·
-              搬家后极小概率软件大版本更新出问题,出问题可一键搬回
-            </p>
-          </div>
-          <button class="item-btn" :disabled="!chosenTarget" @click="begin(item)">
-            开始搬家
+      <template v-else>
+        <!-- 目标盘选择:默认推荐剩余最大的 NTFS 本地盘 -->
+        <section class="targets" v-if="targets.length > 0">
+          <span class="targets-label">搬到:</span>
+          <button
+            v-for="t in targets"
+            :key="t.mountPoint"
+            class="target"
+            :class="{ chosen: t.mountPoint === chosenTarget, bad: !t.isNtfs }"
+            :disabled="!t.isNtfs"
+            :title="t.isNtfs ? '' : '这个盘不是 NTFS 格式,搬过去软件会出问题'"
+            @click="chosenTarget = t.mountPoint"
+          >
+            {{ t.mountPoint }}（剩 {{ fmtBytes(t.freeBytes) }}）
+            <em v-if="t.recommended">推荐</em>
+            <em v-if="!t.isNtfs" class="bad-tag">不支持</em>
           </button>
-        </div>
-      </section>
+        </section>
+        <p v-else class="notice">
+          没有找到能用的目标盘——需要一块除 C 盘外的本地硬盘(U 盘和移动硬盘不行,拔掉后软件会打不开)。
+        </p>
+
+        <section class="rcard">
+          <div class="rows">
+            <div v-for="item in items" :key="item.ruleId" class="row">
+              <div class="ib">
+                <div class="l1">
+                  <span class="nm">{{ item.displayName }}</span>
+                  <span class="sz num">{{ fmtBytes(item.sizeBytes) }}</span>
+                </div>
+                <p class="ex">{{ item.explain }}</p>
+                <p class="dest" v-if="chosenTarget">
+                  将搬到 {{ chosenTarget }}\AppDataMove\ ·
+                  搬家后极小概率软件大版本更新出问题,出问题可一键搬回
+                </p>
+              </div>
+              <button class="btn item-btn" :disabled="!chosenTarget" @click="begin(item)">
+                开始搬家
+              </button>
+            </div>
+          </div>
+        </section>
+      </template>
     </template>
 
     <!-- 向导浮层 -->
@@ -230,14 +245,14 @@ function cancelMoving() {
             <p class="dlg-body">
               {{ lockedBy.join("、") }} 正在使用这些文件。请手动退出,或让我来:
             </p>
-            <button class="primary-btn" :disabled="closing" @click="helpClose">
+            <button class="btn wide" :disabled="closing" @click="helpClose">
               {{ closing ? "正在请它退出…" : "帮我退出" }}
             </button>
             <p class="dlg-aux">退出后这里会自动亮起,不用刷新</p>
           </template>
           <template v-else>
             <p class="dlg-body ok">✓ 软件已退出,可以开始搬家了</p>
-            <button class="primary-btn" @click="doMigrate">开始搬家</button>
+            <button class="btn wide" @click="doMigrate">开始搬家</button>
           </template>
           <button class="link" @click="closeWizard(false)">先不搬了</button>
         </template>
@@ -266,68 +281,104 @@ function cancelMoving() {
             }}试试——一切正常的话,点下面按钮删除 C 盘备份,才会真正腾出
             {{ fmtBytes(doneBytes) }}。
           </p>
-          <button class="primary-btn" :disabled="confirming" @click="confirmOk">
+          <button class="btn wide" :disabled="confirming" @click="confirmOk">
             {{ confirming ? "正在删除备份…" : "软件打开正常,删除备份腾空间" }}
           </button>
           <button class="link" @click="later">稍后再说(备份先留着)</button>
         </template>
       </div>
     </div>
-  </main>
+  </div>
 </template>
 
 <style scoped>
-.migrate {
-  height: 100%;
+.page {
   display: flex;
   flex-direction: column;
-  padding: 0 24px 24px;
-  overflow-y: auto;
+  gap: 12px;
 }
 
-.head {
+.phead {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 16px;
-  padding: 16px 0;
+  padding: 2px 4px 0;
 }
 
-.back {
-  color: var(--color-primary);
-  font-size: var(--font-size-card-title);
-}
-
-.head-stat {
+.phead-l {
   flex: 1;
-  display: flex;
-  flex-direction: column;
+  min-width: 0;
 }
 
-.head-title {
-  font-size: var(--font-size-title);
-  font-weight: 600;
+.ptitle {
+  font-size: 21px;
+  font-weight: 900;
+  color: var(--color-text);
 }
 
-.head-sub {
-  font-size: var(--font-size-aux);
+.psub {
+  font-size: 13.5px;
   color: var(--color-text-secondary);
-}
-
-.moved-link {
-  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .link {
   color: var(--color-primary);
   font-size: var(--font-size-body);
+  flex-shrink: 0;
+}
+
+.rcard {
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  padding: 10px 26px;
+  box-shadow: var(--shadow-card);
+}
+
+.guide-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 26px;
+}
+
+.tile {
+  border-radius: 13px;
+  background: #e2f6ec;
+  color: var(--color-action);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.tile.sm {
+  width: 46px;
+  height: 46px;
+  font-size: 22px;
+}
+
+.tx {
+  flex: 1;
+  min-width: 0;
+}
+
+.tx b {
+  font-size: 19px;
+  font-weight: 900;
+  color: var(--color-text);
+}
+
+.tx p {
+  font-size: 13.5px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
 }
 
 .notice {
   padding: 10px 14px;
-  margin-bottom: 12px;
-  border-radius: 8px;
-  background: #dcfce7;
-  color: var(--color-success);
+  border-radius: 10px;
+  background: var(--pill-safe-bg);
+  color: var(--pill-safe-fg);
 }
 
 .targets {
@@ -335,7 +386,6 @@ function cancelMoving() {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
 }
 
 .targets-label {
@@ -344,8 +394,8 @@ function cancelMoving() {
 
 .target {
   padding: 8px 14px;
-  border-radius: 8px;
-  border: 2px solid #e5e7eb;
+  border-radius: 10px;
+  border: 2px solid var(--color-line);
   background: var(--color-card);
 }
 
@@ -363,7 +413,7 @@ function cancelMoving() {
 .target em {
   font-style: normal;
   font-size: var(--font-size-aux);
-  color: var(--color-success);
+  color: var(--color-action);
   margin-left: 4px;
 }
 
@@ -371,70 +421,92 @@ function cancelMoving() {
   color: var(--color-text-secondary);
 }
 
-.list {
+.rows {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.item {
+.row {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 14px 16px;
-  background: var(--color-card);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
+  padding: 15px 0;
+  border-top: 1px solid var(--color-line);
 }
 
-.item-body {
+.rows .row:first-child {
+  border-top: none;
+}
+
+.ib {
   flex: 1;
   min-width: 0;
 }
 
-.item-line1 {
+.l1 {
   display: flex;
   justify-content: space-between;
   gap: 12px;
 }
 
-.item-name {
-  font-size: var(--font-size-card-title);
-  font-weight: 600;
-}
-
-.item-size {
+.nm {
+  font-size: 15.5px;
   font-weight: 700;
 }
 
-.item-explain {
+.sz {
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.ex {
+  font-size: 13.5px;
   color: var(--color-text-secondary);
   margin: 2px 0;
 }
 
-.item-dest {
+.dest {
   font-size: var(--font-size-aux);
   color: var(--color-text-secondary);
 }
 
-.item-btn {
-  flex-shrink: 0;
-  height: 40px;
-  padding: 0 20px;
-  border-radius: 8px;
-  background: var(--color-primary);
+/* 主行动按钮:行动绿(设计规范 §4.2 改版:主按钮由蓝改绿) */
+.btn {
+  height: 44px;
+  padding: 0 22px;
+  border-radius: 10px;
+  background: var(--color-action);
   color: #fff;
-  font-weight: 600;
+  font-size: 14.5px;
+  font-weight: 700;
+  transition: background 0.16s;
+  white-space: nowrap;
 }
 
-.item-btn:disabled {
+.btn:hover:not(:disabled) {
+  background: var(--color-action-deep);
+}
+
+.btn:disabled {
   background: #d1d5db;
+  cursor: not-allowed;
+}
+
+.btn.wide {
+  height: 48px;
+  min-width: 240px;
+  font-size: 15.5px;
+  font-weight: 800;
+}
+
+.item-btn {
+  flex-shrink: 0;
 }
 
 .mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(20, 28, 43, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -446,6 +518,7 @@ function cancelMoving() {
   padding: 28px 32px;
   background: var(--color-card);
   border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -459,7 +532,7 @@ function cancelMoving() {
 }
 
 .dlg-title.ok {
-  color: var(--color-success);
+  color: var(--color-action);
 }
 
 .dlg-body {
@@ -467,7 +540,7 @@ function cancelMoving() {
 }
 
 .dlg-body.ok {
-  color: var(--color-success);
+  color: var(--color-action);
   font-weight: 600;
 }
 
@@ -476,33 +549,18 @@ function cancelMoving() {
   color: var(--color-text-secondary);
 }
 
-.primary-btn {
-  height: 48px;
-  min-width: 240px;
-  padding: 0 32px;
-  border-radius: 10px;
-  background: var(--color-primary);
-  color: #fff;
-  font-size: var(--font-size-card-title);
-  font-weight: 600;
-}
-
-.primary-btn:disabled {
-  background: #93c5fd;
-}
-
 .bar {
   width: 100%;
   height: 10px;
   border-radius: 5px;
-  background: #e5e7eb;
+  background: #e8eefb;
   overflow: hidden;
 }
 
 .bar-fill {
   height: 100%;
   border-radius: 5px;
-  background: var(--color-primary);
+  background: var(--color-action);
   transition: width 0.2s;
 }
 

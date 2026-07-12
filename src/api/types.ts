@@ -135,6 +135,12 @@ export interface MigrateResult {
 
 export type FileCategory = "video" | "archive" | "installer" | "image" | "other";
 
+/** 分段容量条的后端两段;临时·垃圾由前端合计,其他/剩余由前端差值推出 */
+export interface CapacityBreakdown {
+  systemBytes: number;
+  appsBytes: number;
+}
+
 export interface OrphanProfile {
   /** 显示名(可能是乱码,前端原样呈现) */
   name: string;

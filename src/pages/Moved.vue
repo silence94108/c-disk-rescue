@@ -165,11 +165,8 @@ async function doRevert(rec: MigrateRecord) {
 
 <style scoped>
 .moved {
-  height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 0 24px 24px;
-  overflow-y: auto;
 }
 
 .head {
@@ -206,13 +203,13 @@ async function doRevert(rec: MigrateRecord) {
 }
 
 .notice.ok {
-  background: #dcfce7;
-  color: var(--color-success);
+  background: var(--pill-safe-bg);
+  color: var(--pill-safe-fg);
 }
 
 .notice.warn {
-  background: #fef3c7;
-  color: var(--color-warning);
+  background: var(--pill-cost-bg);
+  color: var(--pill-cost-fg);
 }
 
 .list {
@@ -275,21 +272,21 @@ async function doRevert(rec: MigrateRecord) {
 .op {
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-line);
   background: var(--color-card);
   color: var(--color-text);
 }
 
 .op.primary {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
+  background: var(--color-action);
+  border-color: var(--color-action);
   color: #fff;
   font-weight: 600;
 }
 
 .op.danger {
-  background: var(--color-warning);
-  border-color: var(--color-warning);
+  background: var(--pill-cost-fg);
+  border-color: var(--pill-cost-fg);
   color: #fff;
   font-weight: 600;
 }
@@ -310,7 +307,7 @@ async function doRevert(rec: MigrateRecord) {
   width: 100%;
   height: 8px;
   border-radius: 4px;
-  background: #e5e7eb;
+  background: #e8eefb;
   overflow: hidden;
   margin-top: 8px;
 }
@@ -318,7 +315,7 @@ async function doRevert(rec: MigrateRecord) {
 .bar-fill {
   height: 100%;
   border-radius: 4px;
-  background: var(--color-primary);
+  background: var(--color-action);
   transition: width 0.2s;
 }
 

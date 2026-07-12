@@ -13,9 +13,9 @@
     "windows": [
       {
         "title": "C盘救星",
-        "width": 960,
+        "width": 1000,
         "height": 640,
-        "minWidth": 800,
+        "minWidth": 900,
         "minHeight": 600,
         "center": true
       }

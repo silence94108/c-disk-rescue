@@ -31,7 +31,7 @@ onMounted(async () => {
 <template>
   <main class="map" v-if="summary">
     <header class="head">
-      <button class="back" @click="router.push('/report')">‹ 返回报告</button>
+      <button class="back" @click="router.push('/')">‹ 概览</button>
       <div class="head-stat">
         <span class="head-title">C盘空间分布</span>
         <span class="head-sub num">
@@ -64,18 +64,13 @@ onMounted(async () => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 0 24px 24px;
 }
 
 .head {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 16px 0;
-  position: sticky;
-  top: 0;
-  background: var(--color-bg);
-  z-index: 1;
+  padding: 4px 0 14px;
 }
 
 .back {
@@ -102,8 +97,8 @@ onMounted(async () => {
   padding: 8px 12px;
   margin-bottom: 8px;
   border-radius: 8px;
-  background: #fef3c7;
-  color: var(--color-warning);
+  background: var(--pill-cost-bg);
+  color: var(--pill-cost-fg);
   font-size: var(--font-size-aux);
 }
 

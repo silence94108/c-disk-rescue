@@ -695,6 +695,53 @@ pub fn get_children(state: State<'_, ScanState>, node_id: u32) -> Result<Vec<Tre
     Ok(out)
 }
 
+// ─── 分段容量条(设计规范 §3.1):把「用在哪了」拆成 系统/应用/临时/其他/剩余 ───
+
+/// 只给「系统与保留」「已装应用」两段的绝对值:临时·垃圾段由前端用体检报告
+/// 合计,「其他/剩余」由前端按磁盘用量差值推出(误差全部落入「其他」,不虚报)。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityBreakdown {
+    /// C:\Windows 树 + pagefile/hiberfil/swapfile 页面文件
+    system_bytes: u64,
+    /// Program Files、Program Files (x86)、ProgramData 三树
+    apps_bytes: u64,
+}
+
+/// 从扫描 arena 查表聚合,零新增磁盘遍历(页面文件只读三次元数据)。
+/// 未扫描 / 扫的不是系统盘根 / 系统目录没统计到 → Err,前端降级为「已用/剩余」两段。
+#[tauri::command]
+pub fn get_capacity_breakdown(state: State<'_, ScanState>) -> Result<CapacityBreakdown, String> {
+    let guard = state.result.lock().map_err(|e| e.to_string())?;
+    let scan = guard.as_ref().ok_or("尚未完成扫描")?;
+    let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let root_str = scan.root_path.to_string_lossy().trim_end_matches('\\').to_string();
+    if !root_str.eq_ignore_ascii_case(&sys_drive) {
+        return Err("非系统盘根扫描,无分段数据".into());
+    }
+    let root = scan.nodes.first().ok_or("扫描树为空")?;
+    let mut system = 0u64;
+    let mut apps = 0u64;
+    for &cid in &root.children {
+        let c = &scan.nodes[cid as usize];
+        match c.name.to_lowercase().as_str() {
+            "windows" => system += c.total_bytes,
+            "program files" | "program files (x86)" | "programdata" => apps += c.total_bytes,
+            _ => {}
+        }
+    }
+    if system == 0 {
+        return Err("系统目录未能统计,分段降级".into());
+    }
+    // 页面文件是根目录直接文件,arena 只建目录节点,单独补元数据
+    for f in ["pagefile.sys", "hiberfil.sys", "swapfile.sys"] {
+        if let Ok(m) = std::fs::metadata(scan.root_path.join(f)) {
+            system += m.len();
+        }
+    }
+    Ok(CapacityBreakdown { system_bytes: system, apps_bytes: apps })
+}
+
 // ─── 孤儿 profile 检测(融合方案 §2):C:\Users 下被软件以异常用户名创建、
 // 只剩 AppData 缓存的废弃 profile 残骸。三条件全满足才判定(宁可漏报不误伤)。
 
