@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -59,6 +59,80 @@ pub struct ScanState {
     /// 与 orphans 同款防线——前端只回传 id,migrator 从这里查真实路径,
     /// 接口形状即安全边界(不接受前端传路径,migrator.rs:319 的原则延续)。
     pub candidates: Mutex<HashMap<String, PathBuf>>,
+    /// 大文件删除白名单(绝对路径小写)。体检时从 arena 算出并落盘,
+    /// 供缓存态(重启后 result 为空)删除大文件时校验——见 delete_big_file。
+    pub big_file_paths: Mutex<HashSet<String>>,
+}
+
+// ─── 操作白名单持久化(优化方案:打开秒显示上次结果)───
+// 只落「操作要用的白名单」(大文件路径、候选 id→路径),不落整棵 arena 树。
+// 目的:app 重启后 ScanState.result 为空,但删大文件/pick 搬家仍能凭落盘白名单校验。
+
+fn wl_file(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(name))
+}
+
+fn save_bigfile_wl(app: &AppHandle, paths: &HashSet<String>) {
+    if let Some(f) = wl_file(app, "wl-bigfiles.json") {
+        if let Ok(s) = serde_json::to_string(paths) {
+            let _ = std::fs::write(f, s);
+        }
+    }
+}
+
+fn load_bigfile_wl(app: &AppHandle) -> HashSet<String> {
+    wl_file(app, "wl-bigfiles.json")
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_candidate_wl(app: &AppHandle, map: &HashMap<String, PathBuf>) {
+    if let Some(f) = wl_file(app, "wl-candidates.json") {
+        let flat: HashMap<&String, String> = map
+            .iter()
+            .map(|(k, v)| (k, v.to_string_lossy().into_owned()))
+            .collect();
+        if let Ok(s) = serde_json::to_string(&flat) {
+            let _ = std::fs::write(f, s);
+        }
+    }
+}
+
+fn load_candidate_wl(app: &AppHandle) -> HashMap<String, PathBuf> {
+    wl_file(app, "wl-candidates.json")
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+        .map(|m| m.into_iter().map(|(k, v)| (k, PathBuf::from(v))).collect())
+        .unwrap_or_default()
+}
+
+/// 缓存态自愈:内存候选白名单为空(app 重启后)时从盘加载并回填,再解析 id。
+/// 供 migrator/cleaner 的 pick 分支复用,保证重启后自选搬家仍可用。
+/// 内存已有白名单但不含此 id → 返回 None(合法的「不在列表」),不误从盘覆盖。
+pub(crate) fn resolve_candidate_path(app: &AppHandle, id: &str) -> Option<PathBuf> {
+    let state = app.state::<ScanState>();
+    {
+        let map = state.candidates.lock().ok()?;
+        if let Some(p) = map.get(id) {
+            return Some(p.clone());
+        }
+        if !map.is_empty() {
+            return None;
+        }
+    }
+    let disk = load_candidate_wl(app);
+    let hit = disk.get(id).cloned();
+    if !disk.is_empty() {
+        if let Ok(mut map) = state.candidates.lock() {
+            if map.is_empty() {
+                *map = disk;
+            }
+        }
+    }
+    hit
 }
 
 #[derive(Serialize, Clone)]
@@ -418,12 +492,26 @@ fn do_scan(app: &AppHandle, state: &ScanState, root: PathBuf) -> Result<ScanSumm
         denied_entries: denied,
         elapsed_ms: start.elapsed().as_millis() as u64,
     };
-    *state.result.lock().unwrap() = Some(ScanResult {
+    let result = ScanResult {
         nodes,
         rules,
         root_path: root,
         big_files,
-    });
+    };
+    // 大文件删除白名单:算出绝对路径落盘 + 存内存(缓存态重启后删大文件凭它校验)
+    let bf_paths: HashSet<String> = result
+        .big_files
+        .iter()
+        .map(|bf| {
+            node_path(&result, bf.dir)
+                .join(&bf.name)
+                .to_string_lossy()
+                .to_lowercase()
+        })
+        .collect();
+    save_bigfile_wl(app, &bf_paths);
+    *state.big_file_paths.lock().unwrap() = bf_paths;
+    *state.result.lock().unwrap() = Some(result);
     // 新快照已含撤回目录的真实数据,补丁表作废
     state.reverted.lock().unwrap().clear();
     Ok(summary)
@@ -597,16 +685,35 @@ fn recycle_delete(p: &Path) -> Result<(), String> {
 pub async fn delete_big_file(app: AppHandle, path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<ScanState>();
-        let guard = state.result.lock().map_err(|e| e.to_string())?;
-        let scan = guard.as_ref().ok_or("尚未完成扫描")?;
         let lower = path.to_lowercase();
-        let known = scan.big_files.iter().any(|bf| {
-            node_path(scan, bf.dir)
-                .join(&bf.name)
-                .to_string_lossy()
-                .to_lowercase()
-                == lower
-        });
+        // 新鲜态:用内存 arena 核验;缓存态(重启后 result 为空):用落盘白名单
+        let known = {
+            let guard = state.result.lock().map_err(|e| e.to_string())?;
+            match guard.as_ref() {
+                Some(scan) => scan.big_files.iter().any(|bf| {
+                    node_path(scan, bf.dir)
+                        .join(&bf.name)
+                        .to_string_lossy()
+                        .to_lowercase()
+                        == lower
+                }),
+                None => false,
+            }
+        };
+        let known = known || {
+            // 内存白名单为空(刚重启)则从盘加载一次
+            {
+                let mut wl = state.big_file_paths.lock().map_err(|e| e.to_string())?;
+                if wl.is_empty() {
+                    *wl = load_bigfile_wl(&app);
+                }
+            }
+            state
+                .big_file_paths
+                .lock()
+                .map_err(|e| e.to_string())?
+                .contains(&lower)
+        };
         if !known {
             return Err("这个文件不在本次体检的大文件列表里,拒绝删除".into());
         }
@@ -621,7 +728,6 @@ pub async fn delete_big_file(app: AppHandle, path: String) -> Result<(), String>
         if !deletable {
             return Err("系统文件不能删除".into());
         }
-        drop(guard);
         recycle_delete(Path::new(&path))
     })
     .await
@@ -961,6 +1067,7 @@ fn pick_id(path: &Path) -> String {
 /// 全部从扫描 arena 查表,零新增磁盘遍历(优化方案 §3.2)。
 #[tauri::command]
 pub fn get_migrate_candidates(
+    app: AppHandle,
     state: State<'_, ScanState>,
 ) -> Result<MigrateCandidatesReport, String> {
     let guard = state.result.lock().map_err(|e| e.to_string())?;
@@ -1093,7 +1200,8 @@ pub fn get_migrate_candidates(
         }
     }
 
-    *state.candidates.lock().map_err(|e| e.to_string())? = whitelist;
+    *state.candidates.lock().map_err(|e| e.to_string())? = whitelist.clone();
+    save_candidate_wl(&app, &whitelist);
     Ok(MigrateCandidatesReport { candidates, known_folders })
 }
 
@@ -1356,6 +1464,17 @@ pub async fn get_orphan_profiles(app: AppHandle) -> Result<Vec<OrphanProfile>, S
 pub async fn delete_orphan_profile(app: AppHandle, path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<ScanState>();
+        // 缓存态自愈:重启后 orphans 白名单为空,现场重算
+        // (detect_orphans 扫 C:\Users 即可,不依赖 arena,毫秒级)
+        {
+            let empty = state.orphans.lock().map_err(|e| e.to_string())?.is_empty();
+            if empty {
+                if let Ok(found) = detect_orphans() {
+                    *state.orphans.lock().map_err(|e| e.to_string())? =
+                        found.into_iter().map(|(p, _)| p).collect();
+                }
+            }
+        }
         let target = {
             let orphans = state.orphans.lock().map_err(|e| e.to_string())?;
             let lower = path.to_lowercase();

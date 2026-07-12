@@ -10,6 +10,7 @@ import {
   cleanPhase,
   cleanProgressBytes,
   cleanReport,
+  dropOrphan,
   isDisabled,
   junkTotal,
   loadReportData,
@@ -149,7 +150,7 @@ async function deleteOrphans() {
     try {
       await deleteOrphanProfile(o.path);
       orphanDone.value += o.sizeBytes;
-      orphans.value = orphans.value.filter((x) => x.path !== o.path);
+      dropOrphan(o.path);
       delete orphanChecked.value[o.path];
     } catch (e) {
       orphanErr.value = String(e);

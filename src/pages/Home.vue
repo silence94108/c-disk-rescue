@@ -22,6 +22,8 @@ import {
   selectedBytes,
   selectedItems,
   startCleanSelected,
+  isStale,
+  reportAt,
   type LastScan,
 } from "../store";
 import { fmtBytes, fmtCount, fmtRelativeTime } from "../utils/format";
@@ -144,11 +146,24 @@ const cleanPercent = computed(() => {
   if (selectedBytes.value === 0) return 0;
   return Math.min(99, (cleanProgressBytes.value / selectedBytes.value) * 100);
 });
+
+/* 缓存态时效提示:展示的是上次结果,提醒用户可能有出入 */
+const staleText = computed(() => {
+  if (!isStale.value || !reportAt.value) return "";
+  return `这是 ${fmtRelativeTime(reportAt.value)} 的体检结果,和现在可能有出入`;
+});
 </script>
 
 <template>
   <div class="page">
     <p class="recover" v-if="recoverNotice">{{ recoverNotice }}</p>
+
+    <!-- 时效提示条:展示的是上次缓存结果,提醒并给一键重扫入口 -->
+    <div class="stale" v-if="staleText && phase !== 'scanning'">
+      <svg class="ic"><use href="#i-clock" /></svg>
+      <span>{{ staleText }}</span>
+      <button class="stale-btn" @click="startCheck">重新体检</button>
+    </div>
 
     <!-- 容量大卡(F 稿 .ov):环形 + 分段条 + 图例 -->
     <section class="ov">
@@ -304,6 +319,43 @@ const cleanPercent = computed(() => {
   border-radius: 10px;
   background: #e2f6ec;
   color: var(--pill-safe-fg);
+}
+
+/* 时效提示条:柔和的琥珀色,提醒而非报错 */
+.stale {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: #fdf3e3;
+  border: 1px solid #f6e2c2;
+  color: var(--pill-cost-fg);
+  font-size: 13.5px;
+}
+
+.stale .ic {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.stale span {
+  flex: 1;
+  min-width: 0;
+}
+
+.stale-btn {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: var(--color-action);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.stale-btn:hover {
+  background: var(--color-action-deep);
 }
 
 .done {

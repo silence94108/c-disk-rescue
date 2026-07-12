@@ -319,12 +319,9 @@ fn resolve_migrate_source(
     rule_id: &str,
 ) -> Result<(PathBuf, String, String), String> {
     if rule_id.starts_with("pick:") {
-        let path = {
-            let state = app.state::<crate::scan::ScanState>();
-            let map = state.candidates.lock().map_err(|e| e.to_string())?;
-            map.get(rule_id).cloned()
-        };
-        let path = path.ok_or("这个文件夹不在本次识别的可搬列表里,重新体检一下再试")?;
+        // 缓存态自愈:内存白名单空(重启后)时从盘加载再解析(优化方案)
+        let path = crate::scan::resolve_candidate_path(app, rule_id)
+            .ok_or("这个文件夹不在本次识别的可搬列表里,重新体检一下再试")?;
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -598,16 +595,12 @@ fn remove_history_by_src(app: &AppHandle, src: &str) {
 /// 会损坏用户数据(需求文档 F2 红线)。返回超时后仍在锁定的软件名(空 = 成功)。
 #[tauri::command]
 pub async fn request_close(app: AppHandle, rule_id: String) -> Result<Vec<String>, String> {
-    // pick: 候选路径先在白名单里查好,再进阻塞线程(State 不跨线程)
+    // pick: 候选路径先在白名单里查好(内存空则从盘自愈),再进阻塞线程(State 不跨线程)
     let pick_path = if rule_id.starts_with("pick:") {
-        let p = app
-            .state::<crate::scan::ScanState>()
-            .candidates
-            .lock()
-            .map_err(|e| e.to_string())?
-            .get(&rule_id)
-            .cloned();
-        Some(p.ok_or("这个文件夹不在本次识别的可搬列表里")?)
+        Some(
+            crate::scan::resolve_candidate_path(&app, &rule_id)
+                .ok_or("这个文件夹不在本次识别的可搬列表里")?,
+        )
     } else {
         None
     };

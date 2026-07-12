@@ -6,29 +6,25 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   checkLocks,
   confirmMigration,
-  getMigratables,
-  getMigrateCandidates,
   getMigrateTargets,
   onMigrateProgress,
   requestClose,
   startMigrate,
   cancelMigrate,
 } from "../api";
-import type {
-  KnownFolderInfo,
-  MigratableItem,
-  MigrateCandidate,
-  MigrateProgress,
-  TargetDisk,
-} from "../api/types";
-import { scanSummary } from "../store";
+import type { MigrateProgress, TargetDisk } from "../api/types";
+import {
+  candidates,
+  dropCandidate,
+  dropMigratable,
+  knownFolders,
+  migratables,
+  scanSummary,
+} from "../store";
 import { fmtBytes } from "../utils/format";
 
 const router = useRouter();
 
-const items = ref<MigratableItem[]>([]);
-const candidates = ref<MigrateCandidate[]>([]);
-const knownFolders = ref<KnownFolderInfo[]>([]);
 const targets = ref<TargetDisk[]>([]);
 const chosenTarget = ref<string>("");
 const loading = ref(true);
@@ -59,20 +55,11 @@ const percent = computed(() => {
   return Math.min(99, (progress.value.copiedBytes / progress.value.totalBytes) * 100);
 });
 
+/* 可搬家/候选/Known Folder 来自共享 store(体检时拉、缓存态从快照恢复);
+   目标盘是实时磁盘信息,每次进页现取(缓存态也可用) */
 onMounted(async () => {
-  if (!scanSummary.value) {
-    loading.value = false;
-    return;
-  }
   try {
-    const [mig, cand, tgs] = await Promise.all([
-      getMigratables(),
-      getMigrateCandidates().catch(() => ({ candidates: [], knownFolders: [] })),
-      getMigrateTargets(),
-    ]);
-    items.value = mig;
-    candidates.value = cand.candidates;
-    knownFolders.value = cand.knownFolders;
+    const tgs = await getMigrateTargets();
     targets.value = tgs;
     chosenTarget.value = tgs.find((t) => t.recommended)?.mountPoint ?? "";
   } finally {
@@ -139,8 +126,8 @@ async function doMigrate() {
     const result = await startMigrate(active.value.ruleId, chosenTarget.value);
     doneBytes.value = result.movedBytes;
     wizard.value = "done";
-    // 搬走的自选项从候选列表移除(它现在是联接了)
-    candidates.value = candidates.value.filter((c) => c.id !== finishedId);
+    // 搬走的自选项从候选列表移除(它现在是联接了),同步快照防重启复现
+    dropCandidate(finishedId);
   } catch (e) {
     // 失败文案的重点是安抚:后端已自动回滚,数据无变化(设计规范 §3.4)
     notice.value = String(e);
@@ -178,7 +165,8 @@ function closeWizard(refresh: boolean) {
   const finished = active.value;
   active.value = null;
   if (refresh && finished) {
-    items.value = items.value.filter((i) => i.ruleId !== finished.ruleId);
+    // KB 可搬家项搬完移除,同步快照
+    dropMigratable(finished.ruleId);
   }
 }
 
@@ -197,7 +185,7 @@ async function openFolder(path: string) {
 const noTarget = computed(() => targets.value.length === 0 || !chosenTarget.value);
 const nothing = computed(
   () =>
-    items.value.length === 0 &&
+    migratables.value.length === 0 &&
     candidates.value.length === 0 &&
     knownFolders.value.length === 0,
 );
@@ -254,13 +242,13 @@ const nothing = computed(
         </p>
 
         <!-- 区一:推荐搬家(知识库命中,最稳) -->
-        <section class="rcard" v-if="items.length > 0">
+        <section class="rcard" v-if="migratables.length > 0">
           <div class="sec-head">
             <span class="sec-title">推荐搬家</span>
             <span class="sec-sub">已识别的软件数据目录,搬家最稳妥</span>
           </div>
           <div class="rows">
-            <div v-for="item in items" :key="item.ruleId" class="row">
+            <div v-for="item in migratables" :key="item.ruleId" class="row">
               <div class="ib">
                 <div class="l1">
                   <span class="nm">{{ item.displayName }}</span>

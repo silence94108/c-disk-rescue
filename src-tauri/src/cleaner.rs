@@ -470,14 +470,12 @@ pub struct LockStatus {
 /// (设计规范 §3.4「检测到进程退出后自动亮起」)。
 #[tauri::command]
 pub async fn check_locks(app: AppHandle, rule_ids: Vec<String>) -> Result<Vec<LockStatus>, String> {
-    // pick: 自选候选的真实路径先从白名单取好(State 不跨线程,在 spawn_blocking 外锁一次)
+    // pick: 自选候选的真实路径先取好(内存空则从盘自愈),再进阻塞线程(State 不跨线程)
     let mut pick_paths: Vec<(String, PathBuf)> = Vec::new();
-    {
-        let state = app.state::<crate::scan::ScanState>();
-        let map = state.candidates.lock().map_err(|e| e.to_string())?;
-        for id in &rule_ids {
-            if let Some(p) = map.get(id) {
-                pick_paths.push((id.clone(), p.clone()));
+    for id in &rule_ids {
+        if id.starts_with("pick:") {
+            if let Some(p) = crate::scan::resolve_candidate_path(&app, id) {
+                pick_paths.push((id.clone(), p));
             }
         }
     }

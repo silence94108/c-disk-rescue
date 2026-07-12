@@ -2,8 +2,11 @@ import { createApp } from "vue";
 import App from "./App.vue";
 import { router } from "./router";
 import { recoverPendingMigration } from "./api";
-import { recoverNotice } from "./store";
+import { recoverNotice, restoreSnapshot } from "./store";
 import "./styles/tokens.css";
+
+// 启动即从本地快照恢复上次体检结果,打开就能看到,不用干等扫描
+restoreSnapshot();
 
 createApp(App).use(router).mount("#app");
 

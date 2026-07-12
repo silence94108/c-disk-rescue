@@ -1,16 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { deleteBigFile, getBigFiles, runClean } from "../api";
+import { deleteBigFile, runClean } from "../api";
 import type { BigFileInfo, FileCategory } from "../api/types";
-import { scanSummary } from "../store";
+import { bigFiles, dropBigFile, scanSummary } from "../store";
 import { fmtBytes, fmtDate } from "../utils/format";
 
 const router = useRouter();
 
-const files = ref<BigFileInfo[]>([]);
-const loading = ref(true);
 const filter = ref<"all" | FileCategory>("all");
 /* 行内删除确认:待确认的路径(>2GB 走红色永久删除警示) */
 const askDelete = ref<string | null>(null);
@@ -41,22 +39,13 @@ const CAT_ICON: Record<FileCategory, string> = {
   other: "#i-file",
 };
 
+/* 大文件列表来自共享 store(体检时拉、缓存态从快照恢复),不再每次进页重拉 */
 const shown = computed(() =>
-  filter.value === "all" ? files.value : files.value.filter((f) => f.category === filter.value),
+  filter.value === "all"
+    ? bigFiles.value
+    : bigFiles.value.filter((f) => f.category === filter.value),
 );
-const totalBytes = computed(() => files.value.reduce((s, f) => s + f.sizeBytes, 0));
-
-onMounted(async () => {
-  if (!scanSummary.value) {
-    loading.value = false;
-    return;
-  }
-  try {
-    files.value = await getBigFiles();
-  } finally {
-    loading.value = false;
-  }
-});
+const totalBytes = computed(() => bigFiles.value.reduce((s, f) => s + f.sizeBytes, 0));
 
 async function reveal(f: BigFileInfo) {
   try {
@@ -72,7 +61,7 @@ async function doDelete(f: BigFileInfo) {
   busy.value = f.path;
   try {
     await deleteBigFile(f.path);
-    files.value = files.value.filter((x) => x.path !== f.path);
+    dropBigFile(f.path);
     recycled.value += f.sizeBytes;
   } catch (e) {
     notice.value = String(e);
@@ -100,7 +89,7 @@ async function emptyRecycleBin() {
 <template>
   <div class="page">
     <!-- 未体检:引导回概览(侧栏时代页面常驻,不强制跳转) -->
-    <section class="rcard guide-card" v-if="!hasScan && !loading">
+    <section class="rcard guide-card" v-if="!hasScan">
       <span class="tile sm"><svg class="ic"><use href="#i-file" /></svg></span>
       <div class="tx">
         <b>先做一次体检</b>
@@ -112,8 +101,8 @@ async function emptyRecycleBin() {
     <template v-else>
       <div class="phead">
         <div class="ptitle">大文件</div>
-        <div class="psub num" v-if="!loading">
-          {{ files.length }} 个 100MB 以上的文件 · 共 {{ fmtBytes(totalBytes) }} · 删不删由你决定
+        <div class="psub num">
+          {{ bigFiles.length }} 个 100MB 以上的文件 · 共 {{ fmtBytes(totalBytes) }} · 删不删由你决定
         </div>
       </div>
 
@@ -139,8 +128,7 @@ async function emptyRecycleBin() {
       </div>
 
       <section class="rcard listcard">
-        <p v-if="loading" class="empty">正在整理…</p>
-        <p v-else-if="shown.length === 0" class="empty">
+        <p v-if="shown.length === 0" class="empty">
           没有找到 100MB 以上的大文件,你的 C 盘很干净。
         </p>
         <div class="rows" v-else>
