@@ -1023,6 +1023,14 @@ pub fn get_migrate_candidates(
         }
         let node = &scan.nodes[id as usize];
         let path = node_path(scan, id);
+        // 实时复查:体检后可能已被搬走(arena 快照里仍是普通目录,现在已是联接)。
+        // 与 get_migratables 同款防线——搬走再切回本页时不再重复列出。
+        let migrated_or_gone = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true);
+        if migrated_or_gone {
+            continue;
+        }
         let path_lower = path.to_string_lossy().to_lowercase();
         if candidate_blacklisted(&node.name.to_lowercase(), &path_lower) {
             continue; // 主要为 OneDrive 路径判定(名字判定已在递归里做过)
