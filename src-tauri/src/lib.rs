@@ -23,6 +23,7 @@ pub fn run() {
             scan::delete_big_file,
             scan::get_orphan_profiles,
             scan::delete_orphan_profile,
+            scan::get_external_junctions,
             cleaner::scan_cleanables,
             cleaner::check_locks,
             cleaner::run_clean,
@@ -33,6 +34,7 @@ pub fn run() {
             migrator::get_migrations,
             migrator::confirm_migration,
             migrator::revert_migration,
+            migrator::revert_external_junction,
             migrator::request_close,
             migrator::recover_pending_migration,
         ])

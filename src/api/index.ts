@@ -7,6 +7,7 @@ import type {
   CleanProgress,
   CleanResult,
   DiskInfo,
+  ExternalJunction,
   LockStatus,
   MigratableItem,
   MigrateCandidatesReport,
@@ -75,6 +76,12 @@ export const startMigrate = (ruleId: string, targetRoot: string) =>
 export const cancelMigrate = () => invoke<void>("cancel_migrate");
 
 export const getMigrations = () => invoke<MigrateRecord[]>("get_migrations");
+
+export const getExternalJunctions = () =>
+  invoke<ExternalJunction[]>("get_external_junctions");
+
+export const revertExternalJunction = (src: string) =>
+  invoke<void>("revert_external_junction", { src });
 
 export const confirmMigration = (ruleId: string) =>
   invoke<void>("confirm_migration", { ruleId });

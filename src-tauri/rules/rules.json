@@ -54,6 +54,24 @@
     "action": "migrate"
   },
   {
+    "id": "wechat-devtools",
+    "pathPattern": "%LOCALAPPDATA%\\微信开发者工具",
+    "displayName": "微信开发者工具的数据",
+    "explain": "微信开发者工具的缓存、模拟器和运行数据,通常好几个 GB。可以搬到其他盘,工具照常使用。",
+    "risk": "caution",
+    "relatedProcesses": ["微信开发者工具.exe", "wechatdevtools.exe"],
+    "action": "migrate"
+  },
+  {
+    "id": "volta",
+    "pathPattern": "%LOCALAPPDATA%\\Volta",
+    "displayName": "Volta 管理的 Node 版本",
+    "explain": "Volta 下载的各个 Node.js 版本和工具,做前端开发常占用很大。可以搬到其他盘,命令行照常使用。",
+    "risk": "caution",
+    "relatedProcesses": [],
+    "action": "migrate"
+  },
+  {
     "id": "user-temp",
     "pathPattern": "%LOCALAPPDATA%\\Temp",
     "displayName": "Windows 临时文件",

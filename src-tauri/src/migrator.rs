@@ -244,6 +244,14 @@ fn save_history(app: &AppHandle, records: &[MigrateRecord]) -> Result<(), String
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
+/// 本工具已记录的搬家源路径(小写),供 scan 排除「已在工具记录里」的 junction
+pub(crate) fn history_srcs(app: &AppHandle) -> Vec<String> {
+    load_history(app)
+        .into_iter()
+        .map(|r| r.src.to_lowercase())
+        .collect()
+}
+
 fn write_pending(app: &AppHandle, tx: &PendingTx) -> Result<(), String> {
     let path = data_file(app, "migrate-pending.json")?;
     let json = serde_json::to_string(tx).map_err(|e| e.to_string())?;
@@ -810,6 +818,151 @@ fn do_revert(app: &AppHandle, rule_id: &str) -> Result<(), String> {
     // 撤回补丁表,「可搬家」列表即刻恢复它(重新体检后此表作废)
     if let Ok(mut map) = app.state::<crate::scan::ScanState>().reverted.lock() {
         map.insert(rec.src.to_lowercase(), bytes);
+    }
+    Ok(())
+}
+
+/// 搬回一个「外部 junction」(非本工具搬的、但指向别的盘的已搬走目录,用户需求)。
+/// 复用与 do_revert 相同的事务结构(copy→校验→摘链→就位),但源来自 scan 的
+/// external_junctions 白名单、目标现场从 read_link 取,不涉及 history 与 .bak。
+#[tauri::command]
+pub async fn revert_external_junction(app: AppHandle, src: String) -> Result<(), String> {
+    {
+        let state = app.state::<MigrateState>();
+        if state.running.swap(true, Ordering::SeqCst) {
+            return Err("已有搬家任务在进行".into());
+        }
+        state.cancel.store(false, Ordering::SeqCst);
+    }
+    let app2 = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || do_revert_external(&app2, &src))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+    app.state::<MigrateState>().running.store(false, Ordering::SeqCst);
+    result
+}
+
+fn do_revert_external(app: &AppHandle, src_str: &str) -> Result<(), String> {
+    let state = app.state::<MigrateState>();
+
+    // 白名单校验:必须是本次识别的外部 junction(接口形状即安全边界,不接受任意路径)
+    let src = {
+        let scan_state = app.state::<crate::scan::ScanState>();
+        let wl = scan_state
+            .external_junctions
+            .lock()
+            .map_err(|e| e.to_string())?;
+        let lower = src_str.to_lowercase();
+        wl.iter()
+            .find(|p| p.to_string_lossy().to_lowercase() == lower)
+            .cloned()
+    }
+    .ok_or("这个目录不在本次识别的可搬回列表里,刷新一下再试")?;
+
+    // 现场校验:原位置必须仍是联接,目标数据目录必须还在
+    let src_is_link = std::fs::symlink_metadata(&src)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if !src_is_link {
+        return Err("这个位置已经不是联接了,可能已经处理过".into());
+    }
+    let raw = std::fs::read_link(&src).map_err(|e| format!("读取联接目标失败:{e}"))?;
+    let dst = crate::scan::normalize_junction_target(&raw);
+    if !dst.is_dir() {
+        return Err("搬过去的数据目录找不到了,无法搬回".into());
+    }
+
+    let (files, bytes) = count_tree(&dst)?;
+
+    // C 盘剩余空间校验(同 do_revert:防搬回中途空间不足把数据劈两半)
+    let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let c_free = disks
+        .list()
+        .iter()
+        .find(|d| {
+            d.mount_point()
+                .to_string_lossy()
+                .trim_end_matches('\\')
+                .eq_ignore_ascii_case(&sys_drive)
+        })
+        .map(|d| d.available_space())
+        .unwrap_or(0);
+    if c_free < bytes + bytes / 20 {
+        return Err(format!(
+            "C 盘剩余空间不够装回这 {:.1}GB 数据,先清理 C 盘再搬回",
+            bytes as f64 / 1073741824.0
+        ));
+    }
+
+    // 占用检查:搬回期间目标数据目录必须无人写入
+    let locked = who_locks(&sample_files(&dst, 64));
+    if !locked.is_empty() {
+        return Err(format!("请先退出 {}", locked.join("、")));
+    }
+
+    let _awake = KeepAwake::new();
+    let name = src.file_name().ok_or("路径异常")?.to_string_lossy().into_owned();
+    let tmp = src.with_file_name(format!("{name}.restoring"));
+    if tmp.exists() {
+        best_effort_remove(&tmp);
+    }
+
+    // ① 数据复制回 C 盘临时目录(联接与数据均未动;事务日志复用 restore-* 步骤,
+    // 断电恢复由 recover_pending_migration 统一兜住)
+    let tx = PendingTx {
+        step: "restore-copying".into(),
+        src: src.to_string_lossy().into_owned(),
+        dst: dst.to_string_lossy().into_owned(),
+        bak: tmp.to_string_lossy().into_owned(),
+    };
+    write_pending(app, &tx)?;
+    let mut ctx = CopyCtx {
+        app,
+        cancel: &state.cancel,
+        copied: 0,
+        total: bytes,
+        last_emit: Instant::now(),
+    };
+    if let Err(e) = copy_tree(&dst, &tmp, &mut ctx) {
+        best_effort_remove(&tmp);
+        clear_pending(app);
+        return Err(if e == "cancelled" {
+            "已取消,你的数据没有任何变化".into()
+        } else {
+            e
+        });
+    }
+
+    // ② 双校验
+    let (tf, tb) = count_tree(&tmp)?;
+    if tf != files || tb != bytes {
+        best_effort_remove(&tmp);
+        clear_pending(app);
+        return Err("复制结果校验没通过,已撤销,你的数据没有任何变化。可能有软件正在写入,退干净后再试".into());
+    }
+
+    // ③ 摘联接 → 临时目录就位
+    write_pending(app, &PendingTx { step: "restore-swapping".into(), ..tx.clone() })?;
+    if let Err(e) = junction::delete(&src) {
+        best_effort_remove(&tmp);
+        clear_pending(app);
+        return Err(format!("摘除联接失败({e}),已撤销,你的数据没有任何变化"));
+    }
+    let _ = std::fs::remove_dir(&src);
+    if let Err(e) = std::fs::rename(&tmp, &src) {
+        let _ = junction::create(&dst, &src);
+        best_effort_remove(&tmp);
+        clear_pending(app);
+        return Err(format!("数据就位失败({e}),已恢复原状,软件仍可正常使用"));
+    }
+
+    // ④ 收尾:删别的盘的数据副本;不碰 history(外部 junction 不在记录里)
+    best_effort_remove(&dst);
+    clear_pending(app);
+    if let Ok(mut wl) = app.state::<crate::scan::ScanState>().external_junctions.lock() {
+        wl.retain(|p| p != &src);
     }
     Ok(())
 }

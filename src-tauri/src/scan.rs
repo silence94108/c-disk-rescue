@@ -62,6 +62,9 @@ pub struct ScanState {
     /// 大文件删除白名单(绝对路径小写)。体检时从 arena 算出并落盘,
     /// 供缓存态(重启后 result 为空)删除大文件时校验——见 delete_big_file。
     pub big_file_paths: Mutex<HashSet<String>>,
+    /// 外部 junction 撤回白名单(原始 junction 路径)。get_external_junctions 现扫填充,
+    /// revert_external_junction 只认这里的条目——防止前端传任意路径撤回(接口即边界)。
+    pub external_junctions: Mutex<Vec<PathBuf>>,
 }
 
 // ─── 操作白名单持久化(优化方案:打开秒显示上次结果)───
@@ -916,11 +919,11 @@ pub struct MigrateCandidatesReport {
     known_folders: Vec<KnownFolderInfo>,
 }
 
-/// 候选门槛:≥1GB 才值得用户逐个决策;下钻门槛 2GB;下钻最多两层
-const CAND_MIN_BYTES: u64 = 1024 * 1024 * 1024;
+/// 候选门槛:≥512MB 才值得用户逐个决策;下钻门槛 2GB;下钻最多两层
+const CAND_MIN_BYTES: u64 = 512 * 1024 * 1024;
 const CAND_DRILL_MIN: u64 = 2 * 1024 * 1024 * 1024;
 const CAND_MAX_DEPTH: u32 = 2;
-const CAND_LIMIT: usize = 30;
+const CAND_LIMIT: usize = 40;
 /// Known Folder 引导卡门槛
 const KF_MIN_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
@@ -935,6 +938,11 @@ fn vendor_hint(name_lower: &str) -> Option<&'static str> {
         ("netease", "网易系软件的数据"),
         ("jetbrains", "JetBrains 开发工具的缓存"),
         ("google", "Google Chrome 等的数据"),
+        ("cursor", "Cursor 编辑器的数据"),
+        ("code", "VS Code 的数据和扩展"),
+        ("volta", "Volta 的 Node 版本(开发用)"),
+        ("quark", "夸克的缓存数据"),
+        ("youku", "优酷的缓存数据"),
         ("npm-cache", "npm 前端开发缓存"),
         ("npm", "npm 前端开发缓存"),
         ("pnpm", "pnpm 前端开发缓存"),
@@ -1220,6 +1228,148 @@ fn node_for_path(scan: &ScanResult, target: &Path) -> Option<u32> {
         cur = child;
     }
     Some(cur)
+}
+
+// ─── 外部 junction:所有已搬走的目录(不管是不是本工具搬的)都可见可撤回(用户需求)。
+// 安全判据(真机实测):junction 指向别的盘 = 真·数据搬家,可撤回;
+// 指向 C 盘自己 = Windows 系统兼容链接(Application Data/Cookies/开始菜单…),一律排除。
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalJunction {
+    /// junction 所在位置(原始路径)
+    src: String,
+    /// 指向的真实数据目录
+    dst: String,
+    /// 展示名(junction 目录名)
+    name: String,
+    size_bytes: u64,
+    file_count: u64,
+}
+
+/// 去掉 read_link 返回的 NT 路径前缀(`\??\` 或 `\\?\`),还原成普通盘符路径
+pub(crate) fn normalize_junction_target(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    let stripped = s
+        .strip_prefix(r"\??\")
+        .or_else(|| s.strip_prefix(r"\\?\"))
+        .unwrap_or(&s);
+    PathBuf::from(stripped)
+}
+
+/// Windows 为兼容旧路径建的系统 junction 名(双保险,主判据是「目标盘≠C」)
+fn is_system_junction_name(name: &str) -> bool {
+    const SYS: &[&str] = &[
+        "application data",
+        "cookies",
+        "local settings",
+        "history",
+        "temporary internet files",
+        "my documents",
+        "my music",
+        "my pictures",
+        "my videos",
+        "nethood",
+        "printhood",
+        "recent",
+        "sendto",
+        "templates",
+        "start menu",
+        "开始菜单",
+        "「开始」菜单",
+        "default user",
+        "all users",
+    ];
+    let n = name.to_lowercase();
+    SYS.iter().any(|s| s == &n)
+}
+
+/// 识别用户区所有「指向别的盘」的 junction(即已搬走的数据目录)。
+/// 不依赖扫描树,现扫用户区一级即可(毫秒级),缓存态也能用。
+/// 原始路径存 external_junctions 白名单,供撤回校验。
+#[tauri::command]
+pub async fn get_external_junctions(app: AppHandle) -> Result<Vec<ExternalJunction>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let sys_drive = std::env::var("SystemDrive")
+            .unwrap_or_else(|_| "C:".into())
+            .to_lowercase();
+        // 已在本工具「已搬家」记录里的,不在这里重复展示
+        let history = crate::migrator::history_srcs(&app);
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
+        let mut roots: Vec<PathBuf> = Vec::new();
+        if let Ok(p) = std::env::var("APPDATA") {
+            roots.push(PathBuf::from(p));
+        }
+        if let Ok(p) = std::env::var("LOCALAPPDATA") {
+            roots.push(PathBuf::from(p));
+        }
+        if !userprofile.is_empty() {
+            roots.push(PathBuf::from(&userprofile));
+            roots.push(PathBuf::from(format!("{userprofile}\\Documents")));
+            roots.push(PathBuf::from(format!("{userprofile}\\AppData\\LocalLow")));
+        }
+        let mut found: Vec<(PathBuf, ExternalJunction)> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for root in &roots {
+            let Ok(read) = std::fs::read_dir(root) else { continue };
+            for entry in read.flatten() {
+                let Ok(ft) = entry.file_type() else { continue };
+                if !ft.is_symlink() {
+                    continue;
+                }
+                let src = entry.path();
+                let src_lower = src.to_string_lossy().to_lowercase();
+                if !seen.insert(src_lower.clone()) {
+                    continue; // USERPROFILE 与其子目录可能重叠,去重
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if is_system_junction_name(&name) {
+                    continue; // 系统兼容链接(双保险)
+                }
+                if history.contains(&src_lower) {
+                    continue; // 已在工具记录区
+                }
+                let Ok(raw_target) = std::fs::read_link(&src) else { continue };
+                let target = normalize_junction_target(&raw_target);
+                if !target.is_dir() {
+                    continue; // 目标必须是仍存在的目录
+                }
+                // 主判据:目标盘符 ≠ 系统盘(系统 junction 全指向 C 盘,被此挡住)
+                let tdrive: String = target
+                    .to_string_lossy()
+                    .chars()
+                    .take(2)
+                    .collect::<String>()
+                    .to_lowercase();
+                if tdrive == sys_drive {
+                    continue;
+                }
+                // 排除网络位置(UNC),拔盘/断网后撤回会半途而废
+                if target.to_string_lossy().starts_with("\\\\") {
+                    continue;
+                }
+                let (bytes, files) = crate::cleaner::measure_dir(&target, None);
+                found.push((
+                    src.clone(),
+                    ExternalJunction {
+                        src: src.to_string_lossy().into_owned(),
+                        dst: target.to_string_lossy().into_owned(),
+                        name,
+                        size_bytes: bytes,
+                        file_count: files,
+                    },
+                ));
+            }
+        }
+        found.sort_by(|a, b| b.1.size_bytes.cmp(&a.1.size_bytes));
+        *app.state::<ScanState>()
+            .external_junctions
+            .lock()
+            .map_err(|e| e.to_string())? = found.iter().map(|(p, _)| p.clone()).collect();
+        Ok(found.into_iter().map(|(_, j)| j).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ─── 孤儿 profile 检测(融合方案 §2):C:\Users 下被软件以异常用户名创建、
@@ -1582,8 +1732,8 @@ mod candidate_tests {
         let mut nodes = vec![
             dn("C:\\", None, 20 * GB, vec![1, 2, 3, 4]),
             dn("Microsoft", Some(0), 5 * GB, vec![]), // 黑名单
-            dn("tiny", Some(0), GB / 2, vec![]),      // <1GB
-            dn("moved", Some(0), 3 * GB, vec![]),     // 联接
+            dn("tiny", Some(0), GB / 8, vec![]),       // <512MB 门槛
+            dn("moved", Some(0), 3 * GB, vec![]),      // 联接
             dn("KeepMe", Some(0), 2 * GB, vec![]),    // 合格
         ];
         nodes[3].is_reparse = true;

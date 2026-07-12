@@ -79,6 +79,15 @@ export interface MigrateCandidatesReport {
   knownFolders: KnownFolderInfo[];
 }
 
+/** 外部 junction:所有已搬走的目录(含非本工具搬的),指向别的盘、可搬回 */
+export interface ExternalJunction {
+  src: string;
+  dst: string;
+  name: string;
+  sizeBytes: number;
+  fileCount: number;
+}
+
 export interface CleanableItem {
   ruleId: string;
   displayName: string;
