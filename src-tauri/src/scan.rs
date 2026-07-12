@@ -1001,6 +1001,55 @@ fn candidate_blacklisted(name_lower: &str, full_path_lower: &str) -> bool {
     full_path_lower.contains("onedrive")
 }
 
+/// 自定义转移的硬红线(空间分布自选):系统盘根 / Users 根 / 单个用户目录整根 /
+/// Windows·Program Files·ProgramData 等系统关键区,一律禁止迁移——哪怕它很大。
+/// 候选期靠「准入根只有 4 个用户数据目录」天然挡住系统区;空间分布能看到全盘,
+/// 必须在这里主动补齐拦截。返回 Some(原因) 即禁止。
+fn protected_reason(path: &Path) -> Option<String> {
+    let lower = path.to_string_lossy().to_lowercase().replace('/', "\\");
+    let comps: Vec<&str> = lower
+        .trim_end_matches('\\')
+        .split('\\')
+        .filter(|s| !s.is_empty())
+        .collect();
+    if comps.len() <= 1 {
+        return Some("盘根不能整个迁移".into());
+    }
+    const SYS_DIRS: &[&str] = &[
+        "windows",
+        "program files",
+        "program files (x86)",
+        "programdata",
+        "$recycle.bin",
+        "system volume information",
+        "recovery",
+        "perflogs",
+        "msocache",
+        "windows.old",
+        "$windows.~bt",
+        "$windows.~ws",
+    ];
+    if SYS_DIRS.contains(&comps[1]) {
+        return Some(format!("系统目录「{}」不能迁移", comps[1]));
+    }
+    if comps[1] == "users" {
+        if comps.len() <= 2 {
+            return Some("用户根目录不能迁移".into());
+        }
+        if comps.len() == 3 {
+            return if matches!(comps[2], "default" | "default user" | "all users" | "public") {
+                Some("系统/公共用户目录不能迁移".into())
+            } else {
+                Some("整个用户目录不能迁移,请选它下面的子目录".into())
+            };
+        }
+        if matches!(comps[2], "default" | "default user" | "all users") {
+            return Some("系统模板目录不能迁移".into());
+        }
+    }
+    None
+}
+
 /// 候选自身或 max_depth 层内任一目录直接含 .exe(exe 启发式,拍板记录#2)。
 /// 两级内含 exe = 程序本体形态,不给搬;仅深层含 exe = 开发缓存/游戏资源,可搬标谨慎。
 fn exe_within(scan: &ScanResult, node_id: u32, max_depth: u32) -> bool {
@@ -1211,6 +1260,126 @@ pub fn get_migrate_candidates(
     *state.candidates.lock().map_err(|e| e.to_string())? = whitelist.clone();
     save_candidate_wl(&app, &whitelist);
     Ok(MigrateCandidatesReport { candidates, known_folders })
+}
+
+/// 空间分布页「自定义转移」的评估结果:前端点某目录 → 后端还原真实路径、
+/// 硬拦系统区、复用候选期的 exe/用途评级 → 过审(safe/cautious)发通行证 pick_id、
+/// 不建议(blocked)不发 id。前端仍只拿 id、后端持路径,安全形状与候选一致。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigratePickEval {
+    /// 是否可转:safe/cautious=true;blocked/系统区=false
+    ok: bool,
+    /// safe | cautious | blocked
+    status: String,
+    /// 可转时的通行证 id(pick:<hash>);blocked 时为 null
+    pick_id: Option<String>,
+    name: String,
+    display_name: String,
+    path: String,
+    size_bytes: u64,
+    file_count: u64,
+    /// 风险白话说明(弹窗正文)
+    note: String,
+    /// 被拦时的具体原因(系统区/含 exe 本体/黑名单/已迁移)
+    reason: Option<String>,
+}
+
+/// 评估空间分布树里任一节点能否自定义转移,并在过审时把路径注册进候选白名单。
+/// 复用候选期的全部安全判定(黑名单 + exe 本体 + 用途词典),额外硬拦系统区;
+/// 「用途不明」在这里降级为 cautious(放开到任意目录后,不认识的更该谨慎)。
+#[tauri::command]
+pub fn evaluate_migrate_pick(
+    app: AppHandle,
+    state: State<'_, ScanState>,
+    node_id: u32,
+) -> Result<MigratePickEval, String> {
+    let guard = state.result.lock().map_err(|e| e.to_string())?;
+    let scan = guard.as_ref().ok_or("请先体检——空间分布需要最新数据")?;
+    if node_id as usize >= scan.nodes.len() {
+        return Err("目录不存在,请重新体检".into());
+    }
+    let node = &scan.nodes[node_id as usize];
+    let path = node_path(scan, node_id);
+    let path_str = path.to_string_lossy().into_owned();
+    let path_lower = path_str.to_lowercase();
+    let name = node.name.clone();
+    let name_lower = name.to_lowercase();
+    let size_bytes = node.total_bytes;
+    let file_count = node.file_count;
+    let hint = vendor_hint(&name_lower);
+    let display_name = hint
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "用途不明——搬之前先点「打开位置」确认下".to_string());
+
+    let deny = |reason: &str, note: &str| MigratePickEval {
+        ok: false,
+        status: "blocked".into(),
+        pick_id: None,
+        name: name.clone(),
+        display_name: display_name.clone(),
+        path: path_str.clone(),
+        size_bytes,
+        file_count,
+        note: note.into(),
+        reason: Some(reason.into()),
+    };
+
+    // 1. 已是联接(本工具已迁移 / 系统兼容 junction / 软链)——不能再搬
+    if node.is_reparse {
+        return Ok(deny("已是迁移链接或软链", "这个位置已经是搬家链接了,不用再搬。"));
+    }
+    // 2. 系统关键区硬红线
+    if let Some(r) = protected_reason(&path) {
+        return Ok(deny(&r, "这是系统关键区域,搬走可能导致系统或软件异常,已禁止。"));
+    }
+    // 3. 名字/路径黑名单(UWP、软件本体、OneDrive 占位区等)
+    if candidate_blacklisted(&name_lower, &path_lower) {
+        return Ok(deny(
+            "系统/特殊目录(UWP、软件本体、OneDrive 等)",
+            "这类目录搬走容易出问题(权限/占位文件/程序本体),已禁止。",
+        ));
+    }
+    // 4. 程序本体:两级内直接含 .exe → 不建议,硬禁(拍板:硬禁止点不动)
+    if exe_within(scan, node_id, 1) {
+        return Ok(deny(
+            "含 .exe 程序本体",
+            "这个文件夹里有程序本体(.exe),搬走大概率打不开,已禁止。",
+        ));
+    }
+    // 5. 过审:cautious(深层有 exe / 用途不明)或 safe
+    let (status, note) = if node.has_exe_subtree {
+        (
+            "cautious",
+            "里面深处有程序文件,一般是开发或游戏数据,可以搬但心里有数。".to_string(),
+        )
+    } else if hint.is_none() {
+        (
+            "cautious",
+            "用途不明的目录,搬之前建议先点「打开位置」确认下里面是什么。".to_string(),
+        )
+    } else {
+        ("safe", String::new())
+    };
+    // 注册进候选白名单(累积;与 get_migrate_candidates 同款落盘,重启可自愈)
+    let pid = pick_id(&path);
+    {
+        let mut map = state.candidates.lock().map_err(|e| e.to_string())?;
+        map.insert(pid.clone(), path.clone());
+        save_candidate_wl(&app, &map);
+    }
+    Ok(MigratePickEval {
+        ok: true,
+        status: status.into(),
+        pick_id: Some(pid),
+        name,
+        display_name,
+        path: path_str,
+        size_bytes,
+        file_count,
+        note,
+        reason: None,
+    })
 }
 
 /// 按绝对路径在 arena 里定位节点:从根逐段匹配子节点名(大小写不敏感)。

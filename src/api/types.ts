@@ -79,6 +79,23 @@ export interface MigrateCandidatesReport {
   knownFolders: KnownFolderInfo[];
 }
 
+/** 空间分布「自定义转移」的评估结果:后端还原真实路径 + 硬拦系统区 + 复用风险评级 */
+export interface MigratePickEval {
+  /** 是否可转:safe/cautious=true;blocked/系统区=false */
+  ok: boolean;
+  status: "safe" | "cautious" | "blocked";
+  /** 可转时的通行证 id;blocked 时为 null */
+  pickId: string | null;
+  name: string;
+  displayName: string;
+  path: string;
+  sizeBytes: number;
+  fileCount: number;
+  note: string;
+  /** 被拦时的具体原因(系统区/含 exe 本体/已迁移) */
+  reason: string | null;
+}
+
 /** 外部 junction:所有已搬走的目录(含非本工具搬的),指向别的盘、可搬回 */
 export interface ExternalJunction {
   src: string;

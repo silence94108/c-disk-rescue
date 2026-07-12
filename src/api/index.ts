@@ -11,6 +11,7 @@ import type {
   LockStatus,
   MigratableItem,
   MigrateCandidatesReport,
+  MigratePickEval,
   MigrateProgress,
   MigrateRecord,
   MigrateResult,
@@ -35,6 +36,10 @@ export const getMigratables = () => invoke<MigratableItem[]>("get_migratables");
 
 export const getMigrateCandidates = () =>
   invoke<MigrateCandidatesReport>("get_migrate_candidates");
+
+/** 空间分布自定义转移:评估某节点能否搬,过审则后端注册候选白名单并回 pickId */
+export const evaluateMigratePick = (nodeId: number) =>
+  invoke<MigratePickEval>("evaluate_migrate_pick", { nodeId });
 
 export const getCapacityBreakdown = () =>
   invoke<CapacityBreakdown>("get_capacity_breakdown");

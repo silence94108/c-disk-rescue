@@ -24,6 +24,7 @@ pub fn run() {
             scan::get_orphan_profiles,
             scan::delete_orphan_profile,
             scan::get_external_junctions,
+            scan::evaluate_migrate_pick,
             cleaner::scan_cleanables,
             cleaner::check_locks,
             cleaner::run_clean,

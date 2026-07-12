@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, inject, ref } from "vue";
 import type { TreeNode } from "../api/types";
 import { getChildren } from "../api";
 import { fmtBytes, fmtCount } from "../utils/format";
@@ -10,6 +10,11 @@ const props = defineProps<{
   siblingMax: number;
   depth: number;
 }>();
+
+/* 空间分布「自定义转移」:入口由 SpaceMap 注入,递归子行共用回调与已搬集合 */
+const pickMigrate = inject<(node: TreeNode) => void>("pickMigrate");
+const movedIds = inject<Set<number>>("movedIds");
+const moved = computed(() => movedIds?.has(props.node.id) ?? false);
 
 const expanded = ref(false);
 const loading = ref(false);
@@ -60,8 +65,8 @@ const riskColor: Record<string, string> = {
           <span v-if="node.rule" class="tag" :style="{ color: riskColor[node.rule.risk] }">
             {{ node.rule.displayName }}
           </span>
-          <span v-if="node.isReparse" class="tag moved">
-            已迁移 → {{ node.reparseTarget ?? "其他位置" }}
+          <span v-if="node.isReparse || moved" class="tag moved">
+            {{ node.isReparse ? `已迁移 → ${node.reparseTarget ?? "其他位置"}` : "已搬走" }}
           </span>
         </div>
         <div class="bar-track">
@@ -74,6 +79,15 @@ const riskColor: Record<string, string> = {
         <span class="size">{{ fmtBytes(node.sizeBytes) }}</span>
         <span class="count">{{ fmtCount(node.fileCount) }} 个文件</span>
       </div>
+
+      <button
+        v-if="!node.isReparse && !moved"
+        class="mv-btn"
+        title="转移到其他盘"
+        @click.stop="pickMigrate?.(node)"
+      >
+        转移
+      </button>
     </div>
 
     <div v-if="expanded" class="children">
@@ -203,5 +217,27 @@ const riskColor: Record<string, string> = {
   padding: 6px 12px;
   font-size: var(--font-size-aux);
   color: var(--color-text-secondary);
+}
+
+.mv-btn {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1.5px solid var(--color-action);
+  color: var(--color-action);
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--color-card);
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.row-main:hover .mv-btn {
+  opacity: 1;
+}
+
+.mv-btn:hover {
+  background: #e2f6ec;
 }
 </style>
