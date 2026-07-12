@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -134,7 +135,7 @@ fn matches_patterns(name: &std::ffi::OsStr, patterns: Option<&[String]>) -> bool
 
 /// 统计一个清理项的当前大小(实占口径,与删除统计一致)。
 /// 遇 reparse point 不跟入(红线);读不了的目录静默跳过(needsAdmin 项普通权限下 size=0)。
-fn measure_dir(dir: &Path, patterns: Option<&[String]>) -> (u64, u64) {
+pub(crate) fn measure_dir(dir: &Path, patterns: Option<&[String]>) -> (u64, u64) {
     let (mut bytes, mut files) = (0u64, 0u64);
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -156,8 +157,108 @@ fn measure_dir(dir: &Path, patterns: Option<&[String]>) -> (u64, u64) {
     (bytes, files)
 }
 
-/// 递归取样至多 limit 个文件,供 Restart Manager 注册。
-/// 浏览器进程锁定的是缓存子目录里的具体文件,故必须深入取样而非只看顶层。
+/// FileRepository 子目录名 → 分组 key:`nv_dispi.inf_amd64_<hash>` → `nv_dispi.inf_amd64`。
+/// 同 inf 同架构的多个 hash 目录 = 同一驱动的多个版本共存
+fn driver_group_key(dir_name: &str) -> Option<String> {
+    let lower = dir_name.to_lowercase();
+    let pos = lower.find(".inf_")?;
+    let rest = &lower[pos + 5..];
+    let arch_end = rest.find('_')?;
+    Some(lower[..pos + 5 + arch_end].to_string())
+}
+
+/// inf 是 UTF-16LE(带 BOM)或 ANSI,两种都要认
+fn read_inf_text(p: &Path) -> Option<String> {
+    let bytes = std::fs::read(p).ok()?;
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        let utf16: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        Some(String::from_utf16_lossy(&utf16))
+    } else {
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+/// 版本比较 key:4 段版本号优先,同版本再比日期(y,m,d)
+type DriverVerKey = (u64, u64, u64, u64, u32, u32, u32);
+
+/// 解析 inf 的 `DriverVer = MM/DD/YYYY,a.b.c.d` 行
+fn parse_driver_ver(content: &str) -> Option<DriverVerKey> {
+    for line in content.lines() {
+        let t = line.trim();
+        if t.len() < 9 || !t[..9].eq_ignore_ascii_case("driverver") {
+            continue;
+        }
+        let rest = t[9..].trim_start().strip_prefix('=')?.trim();
+        let rest = rest.split(';').next().unwrap_or("").trim();
+        let mut parts = rest.splitn(2, ',');
+        let date = parts.next().unwrap_or("").trim();
+        let ver = parts.next().unwrap_or("").trim();
+        let mut dmy = date.split('/');
+        let m: u32 = dmy.next()?.trim().parse().ok()?;
+        let d: u32 = dmy.next()?.trim().parse().ok()?;
+        let y: u32 = dmy.next()?.trim().parse().ok()?;
+        let mut v = [0u64; 4];
+        for (i, seg) in ver.split('.').take(4).enumerate() {
+            v[i] = seg.trim().parse().unwrap_or(0);
+        }
+        return Some((v[0], v[1], v[2], v[3], y, m, d));
+    }
+    None
+}
+
+/// 「设备驱动程序包」的展示口径:同 inf 同架构多版本共存时,严格旧于最新版
+/// 的目录才计入(cleanmgr「保留每驱动最新版」思路的近似)。仅用于预估展示,
+/// 删除仍引导系统磁盘清理;组内任一版本读不出 DriverVer 则整组保守跳过
+pub(crate) fn measure_old_driver_packages(repo: &Path) -> (u64, u64) {
+    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let Ok(read) = std::fs::read_dir(repo) else {
+        return (0, 0);
+    };
+    for entry in read.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() || ft.is_symlink() {
+            continue;
+        }
+        if let Some(key) = driver_group_key(&entry.file_name().to_string_lossy()) {
+            groups.entry(key).or_default().push(entry.path());
+        }
+    }
+    let (mut bytes, mut files) = (0u64, 0u64);
+    for (key, dirs) in groups {
+        if dirs.len() < 2 {
+            continue;
+        }
+        let Some(stem) = key.split(".inf_").next() else { continue };
+        let inf_name = format!("{stem}.inf");
+        let mut vers: Vec<(DriverVerKey, &PathBuf)> = Vec::new();
+        for d in &dirs {
+            match read_inf_text(&d.join(&inf_name)).as_deref().and_then(parse_driver_ver) {
+                Some(v) => vers.push((v, d)),
+                None => {
+                    vers.clear();
+                    break;
+                }
+            }
+        }
+        if vers.is_empty() {
+            continue;
+        }
+        let newest = vers.iter().map(|(v, _)| *v).max().unwrap();
+        for (v, d) in &vers {
+            if *v < newest {
+                let (b, f) = measure_dir(d, None);
+                bytes += b;
+                files += f;
+            }
+        }
+    }
+    (bytes, files)
+}
+
+/// 递归取样至多 limit 个文件,供 Restart Manager 注册。/// 浏览器进程锁定的是缓存子目录里的具体文件,故必须深入取样而非只看顶层。
 pub(crate) fn sample_files(dir: &Path, limit: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -318,7 +419,12 @@ pub async fn scan_cleanables(app: AppHandle) -> Result<CleanablesReport, String>
                     continue;
                 }
                 let patterns = rule.file_patterns.as_deref();
-                let (bytes, files) = measure_dir(&path, patterns);
+                // 驱动仓库专用口径:只算旧版本部分,不算在用驱动
+                let (bytes, files) = if rule.id == "driver-packages" {
+                    measure_old_driver_packages(&path)
+                } else {
+                    measure_dir(&path, patterns)
+                };
                 // 占用检测只对有关联进程的项做(浏览器等);Temp 类靠删除时逐文件容错
                 let locked_by = if !rule.related_processes.is_empty() && bytes > 0 {
                     who_locks(&sample_files(&path, 64))
@@ -533,6 +639,15 @@ fn do_clean(app: &AppHandle, rule_ids: Vec<String>) -> CleanResult {
             });
             continue;
         }
+        // DriverStore 里在用驱动与废弃旧驱动混在同层,逐文件删会删坏在用驱动,
+        // 必须由系统(pnputil/cleanmgr)判定孤儿包。只展示 + explain 教手动清理
+        if rule.id == "driver-packages" {
+            total.skipped.push(SkippedRule {
+                rule_id: rule.id,
+                reason: "此项请按说明用系统自带的「磁盘清理」处理,更安全".into(),
+            });
+            continue;
+        }
 
         if rule.path_pattern == "special:recycle-bin" {
             let (bytes, count) = recycle_bin_status();
@@ -605,5 +720,44 @@ fn do_clean(app: &AppHandle, rule_ids: Vec<String>) -> CleanResult {
 pub fn cancel_clean(state: State<'_, CleanState>) {
     if state.running.load(Ordering::SeqCst) {
         state.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod driver_tests {
+    use super::*;
+
+    /// 真机冒烟:旧版口径必须严格不超过整仓口径;输出预估值供与 cleanmgr 对照
+    #[test]
+    fn old_driver_size_is_subset_of_repo() {
+        let repo = PathBuf::from(std::env::var("WINDIR").unwrap())
+            .join(r"System32\DriverStore\FileRepository");
+        if !repo.is_dir() {
+            return;
+        }
+        let (old_bytes, old_files) = measure_old_driver_packages(&repo);
+        let (total, _) = measure_dir(&repo, None);
+        eprintln!(
+            "旧版驱动预估 {:.2} GB / {} 文件;整仓 {:.2} GB",
+            old_bytes as f64 / 1e9,
+            old_files,
+            total as f64 / 1e9
+        );
+        assert!(old_bytes <= total);
+    }
+
+    #[test]
+    fn driver_ver_parsing() {
+        assert_eq!(
+            parse_driver_ver("[Version]\r\nDriverVer = 07/01/2021,27.21.14.5671\r\n"),
+            Some((27, 21, 14, 5671, 2021, 7, 1))
+        );
+        assert_eq!(
+            parse_driver_ver("driverver=1/2/2020,1.0 ; comment"),
+            Some((1, 0, 0, 0, 2020, 1, 2))
+        );
+        assert_eq!(parse_driver_ver("NoVersionHere=1"), None);
+        assert_eq!(driver_group_key("nv_dispi.inf_amd64_abc123"), Some("nv_dispi.inf_amd64".into()));
+        assert_eq!(driver_group_key("weird-folder"), None);
     }
 }

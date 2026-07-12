@@ -185,6 +185,16 @@
     "action": "clean"
   },
   {
+    "id": "driver-packages",
+    "pathPattern": "%WINDIR%\\System32\\DriverStore\\FileRepository",
+    "displayName": "旧版本设备驱动备份",
+    "explain": "更新驱动后系统留下的旧版本备份,显卡驱动更新多次后常堆到几个 GB。这里显示的是旧版本部分的预估大小(不含正在使用的驱动),以系统清理的实际结果为准。本工具不直接删它(需要系统判断哪些已废弃),手动清理方法:打开「此电脑」→ 右键 C 盘 →「属性」→「磁盘清理」→「清理系统文件」→ 勾选「设备驱动程序包」。最近刚更新过驱动、还在观察稳不稳的,建议先留几天再清。",
+    "risk": "cost",
+    "needsAdmin": true,
+    "relatedProcesses": [],
+    "action": "clean"
+  },
+  {
     "id": "windows-old",
     "pathPattern": "%SystemDrive%\\Windows.old",
     "displayName": "旧版本系统备份",

@@ -37,6 +37,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_Shell",
   "Win32_System_Power",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Registry",
 ] }
 
 # dev 模式下依赖库按 O2 编译:扫描性能接近 release,自身代码仍保持快速增量编译

@@ -2,10 +2,13 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   checkLocks,
+  deleteOrphanProfile,
   getBigFiles,
   getMigratables,
+  getOrphanProfiles,
   onCleanProgress,
   runClean,
   scanCleanables,
@@ -16,6 +19,7 @@ import type {
   CleanablesReport,
   CleanResult,
   MigratableItem,
+  OrphanProfile,
 } from "../api/types";
 import { scanSummary, loadLastScan, saveLastScan } from "../store";
 import { fmtBytes } from "../utils/format";
@@ -25,6 +29,13 @@ const router = useRouter();
 const report = ref<CleanablesReport | null>(null);
 const migratables = ref<MigratableItem[]>([]);
 const bigFiles = ref<BigFileInfo[]>([]);
+const orphans = ref<OrphanProfile[]>([]);
+/* 孤儿 profile:未知目录里的特例,勾选默认全不选(融合方案 §3 防线④) */
+const orphanChecked = ref<Record<string, boolean>>({});
+const orphanAsk = ref(false);
+const orphanBusy = ref(false);
+const orphanDone = ref(0);
+const orphanErr = ref("");
 const phase = ref<"loading" | "ready" | "cleaning" | "done">("loading");
 const showDetail = ref(false);
 const checked = ref<Record<string, boolean>>({});
@@ -72,21 +83,28 @@ function badge(item: CleanableItem): Badge {
       cls: "gray",
     };
   if (item.needsAdmin && !report.value?.isElevated)
-    return { icon: "⚪", text: "需要管理员权限", cls: "gray" };
+    return {
+      icon: "⚪",
+      text: "需要管理员权限:关掉本软件,右键它的图标选「以管理员身份运行」,再体检一次就能清理这项",
+      cls: "gray",
+    };
   if (item.risk === "safe") return { icon: "🟢", text: "放心删", cls: "safe" };
   if (item.risk === "cost") return { icon: "🟡", text: "删了有代价", cls: "cost" };
   return { icon: "🟠", text: "谨慎,想清楚再勾", cls: "caution" };
 }
 
 async function loadReport() {
-  const [clean, mig, big] = await Promise.all([
+  const [clean, mig, big, orph] = await Promise.all([
     scanCleanables(),
     getMigratables().catch(() => [] as MigratableItem[]),
     getBigFiles().catch(() => [] as BigFileInfo[]),
+    getOrphanProfiles().catch(() => [] as OrphanProfile[]),
   ]);
   report.value = clean;
   migratables.value = mig;
   bigFiles.value = big;
+  orphans.value = orph;
+  orphanChecked.value = {};
   /* 默认勾选:放心删 + 有代价;谨慎级和被禁用项不勾(需求文档 F2 分级) */
   const next: Record<string, boolean> = {};
   for (const item of clean.items) {
@@ -171,6 +189,49 @@ async function startClean() {
     unlisten?.();
     unlisten = null;
   }
+}
+
+const orphanSelected = computed(() =>
+  orphans.value.filter((o) => orphanChecked.value[o.path]),
+);
+const orphanSelectedBytes = computed(() =>
+  orphanSelected.value.reduce((s, o) => s + o.sizeBytes, 0),
+);
+
+function orphanHintText(o: OrphanProfile): string {
+  const src = o.hints.length ? `${o.hints.join("、")} 留下的缓存` : "来源软件未知的缓存残留";
+  return `${src} · ${o.fileCount} 个文件,里面没有你的文档和照片`;
+}
+
+async function revealOrphan(o: OrphanProfile) {
+  try {
+    await revealItemInDir(o.path);
+  } catch {
+    /* 名字含损坏字符的目录路径打不开时,退而求其次带用户到 Users 目录 */
+    try {
+      await revealItemInDir(o.path.slice(0, o.path.lastIndexOf("\\")));
+    } catch {
+      /* 都打不开就算了,不打扰 */
+    }
+  }
+}
+
+async function deleteOrphans() {
+  if (orphanBusy.value || orphanSelected.value.length === 0) return;
+  orphanAsk.value = false;
+  orphanBusy.value = true;
+  orphanErr.value = "";
+  for (const o of [...orphanSelected.value]) {
+    try {
+      await deleteOrphanProfile(o.path);
+      orphanDone.value += o.sizeBytes;
+      orphans.value = orphans.value.filter((x) => x.path !== o.path);
+      delete orphanChecked.value[o.path];
+    } catch (e) {
+      orphanErr.value = String(e);
+    }
+  }
+  orphanBusy.value = false;
 }
 </script>
 
@@ -280,6 +341,62 @@ async function startClean() {
               </span>
             </div>
           </label>
+        </section>
+
+        <!-- 孤儿账户残留(融合方案 §2/§3):被三条件识别的特定残骸,
+             默认不勾选、删除进回收站、独立于「一键优化」通道 -->
+        <section class="orphan" v-if="orphans.length > 0 || orphanDone > 0">
+          <div class="orphan-head">
+            <span class="orphan-title">🟡 发现疑似废弃的账户残留</span>
+            <span class="orphan-sub">
+              某些软件曾用错乱的名字在系统里留下缓存目录(名字显示为乱码是正常现象)。
+              删不删由你决定;删除只进回收站,后悔了可以还原。
+            </span>
+          </div>
+          <p v-if="orphanDone > 0" class="orphan-done num">
+            已移入回收站 {{ fmtBytes(orphanDone) }}(清空回收站后才真正腾出空间)
+          </p>
+          <p v-if="orphanErr" class="error">{{ orphanErr }}</p>
+          <label v-for="o in orphans" :key="o.path" class="item" :title="o.path">
+            <input
+              type="checkbox"
+              v-model="orphanChecked[o.path]"
+              :disabled="orphanBusy"
+            />
+            <div class="item-body">
+              <div class="item-line1">
+                <span class="item-name">{{ o.name }}</span>
+                <span class="item-size num">{{ fmtBytes(o.sizeBytes) }}</span>
+              </div>
+              <p class="item-explain">{{ orphanHintText(o) }}</p>
+              <button class="link orphan-reveal" @click.prevent="revealOrphan(o)">
+                打开位置看看 ›
+              </button>
+            </div>
+          </label>
+          <div class="orphan-ops" v-if="orphans.length > 0">
+            <template v-if="orphanAsk">
+              <span class="orphan-confirm">
+                把选中的 {{ orphanSelected.length }} 个目录移进回收站(可反悔),确定吗?
+              </span>
+              <button class="op del" :disabled="orphanBusy" @click="deleteOrphans">
+                删除
+              </button>
+              <button class="op" @click="orphanAsk = false">先不删</button>
+            </template>
+            <button
+              v-else
+              class="op del"
+              :disabled="orphanSelected.length === 0 || orphanBusy"
+              @click="orphanAsk = true"
+            >
+              {{
+                orphanBusy
+                  ? "正在删除…"
+                  : `删除勾选的残留(${fmtBytes(orphanSelectedBytes)})`
+              }}
+            </button>
+          </div>
         </section>
       </template>
     </template>
@@ -549,5 +666,74 @@ async function startClean() {
   padding: 40px;
   text-align: center;
   color: var(--color-text-secondary);
+}
+
+.orphan {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.orphan-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.orphan-title {
+  font-size: var(--font-size-card-title);
+  font-weight: 600;
+  color: #ea580c;
+}
+
+.orphan-sub {
+  font-size: var(--font-size-body);
+  color: var(--color-text-secondary);
+}
+
+.orphan-done {
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: var(--color-warning);
+}
+
+.orphan-reveal {
+  font-size: var(--font-size-aux);
+  padding: 0;
+  text-align: left;
+  color: var(--color-primary);
+}
+
+.orphan-ops {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.orphan-confirm {
+  font-size: var(--font-size-aux);
+  color: var(--color-warning);
+}
+
+.op {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  background: var(--color-card);
+}
+
+.op.del {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.op:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

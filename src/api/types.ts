@@ -133,6 +133,16 @@ export interface MigrateResult {
 
 export type FileCategory = "video" | "archive" | "installer" | "image" | "other";
 
+export interface OrphanProfile {
+  /** 显示名(可能是乱码,前端原样呈现) */
+  name: string;
+  path: string;
+  sizeBytes: number;
+  fileCount: number;
+  /** 来源软件线索(据 AppData 内部目录推断),如 ["腾讯电脑管家"] */
+  hints: string[];
+}
+
 export interface BigFileInfo {
   path: string;
   name: string;

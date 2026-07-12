@@ -11,6 +11,7 @@ import type {
   MigrateProgress,
   MigrateRecord,
   MigrateResult,
+  OrphanProfile,
   ScanProgress,
   ScanSummary,
   TargetDisk,
@@ -33,6 +34,12 @@ export const getBigFiles = () => invoke<BigFileInfo[]>("get_big_files");
 
 export const deleteBigFile = (path: string) =>
   invoke<void>("delete_big_file", { path });
+
+export const getOrphanProfiles = () =>
+  invoke<OrphanProfile[]>("get_orphan_profiles");
+
+export const deleteOrphanProfile = (path: string) =>
+  invoke<void>("delete_orphan_profile", { path });
 
 export const scanCleanables = () => invoke<CleanablesReport>("scan_cleanables");
 

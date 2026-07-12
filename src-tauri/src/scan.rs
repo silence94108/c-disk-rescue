@@ -46,6 +46,11 @@ pub struct ScanState {
     /// 体检时已迁移目录是联接、快照里大小为 0,撤回后它重新占用 C 盘,
     /// 该表把撤回时统计到的大小补进「可搬家」;重新体检后作废清空。
     pub reverted: Mutex<std::collections::HashMap<String, u64>>,
+    /// 本次识别出的孤儿 profile 原始路径(WTF-8 无损)。
+    /// 删除接口只认这里面的条目——白名单校验的数据源;
+    /// 乱码目录名含无效 UTF-16,给前端的 String 是 lossy 的,
+    /// 实际文件操作必须用这里的原始 PathBuf。
+    pub orphans: Mutex<Vec<PathBuf>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -688,4 +693,338 @@ pub fn get_children(state: State<'_, ScanState>, node_id: u32) -> Result<Vec<Tre
         .collect();
     out.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
     Ok(out)
+}
+
+// ─── 孤儿 profile 检测(融合方案 §2):C:\Users 下被软件以异常用户名创建、
+// 只剩 AppData 缓存的废弃 profile 残骸。三条件全满足才判定(宁可漏报不误伤)。
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanProfile {
+    /// 显示名(可能是乱码,前端原样呈现)
+    name: String,
+    path: String,
+    size_bytes: u64,
+    file_count: u64,
+    /// 据 AppData 内部目录推断的来源软件线索,降低用户删除时的恐惧
+    hints: Vec<String>,
+}
+
+/// 读取 HKLM ProfileList 中系统登记的全部 profile 目录(小写)。
+/// 任一步失败返回 None——调用方必须降级为「不判定」,绝不因取数失败误伤。
+fn registered_profile_paths() -> Option<Vec<String>> {
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE,
+        KEY_READ, RRF_RT_REG_SZ,
+    };
+    let root: Vec<u16> = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let value_name: Vec<u16> = "ProfileImagePath"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let mut hkey: HKEY = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, root.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut name = [0u16; 256];
+            let mut name_len = name.len() as u32;
+            if RegEnumKeyExW(
+                hkey,
+                index,
+                name.as_mut_ptr(),
+                &mut name_len,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ) != 0
+            {
+                break; // ERROR_NO_MORE_ITEMS,枚举完毕
+            }
+            index += 1;
+            let mut buf = [0u16; 1024];
+            let mut size = (buf.len() * 2) as u32;
+            // RRF_RT_REG_SZ:REG_EXPAND_SZ 值会被自动展开后按 SZ 返回
+            if RegGetValueW(
+                hkey,
+                name.as_ptr(),
+                value_name.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr() as *mut _,
+                &mut size,
+            ) == 0
+            {
+                // 按第一个 NUL 截断——REG_EXPAND_SZ 展开后 size 可能大于
+                // 实际字符串,NUL 之后是上轮循环的缓冲区残留,不能信 size
+                let end = buf
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or_else(|| (size as usize / 2).min(buf.len()));
+                out.push(String::from_utf16_lossy(&buf[..end]).to_lowercase());
+            }
+        }
+        RegCloseKey(hkey);
+        // 正常系统至少登记 systemprofile/LocalService/NetworkService + 真实用户,
+        // 读出来是空说明取数异常,同样降级
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+}
+
+/// 条件③:废弃 profile 的指纹——子目录仅 AppData,顶层文件仅系统噪音。
+/// 出现任何其他内容(哪怕一个文档)立即否决,宁可漏报。
+fn looks_like_abandoned_profile(dir: &Path) -> bool {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut has_appdata = false;
+    for entry in read.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            return false;
+        };
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if ft.is_symlink() {
+            return false;
+        } else if ft.is_dir() {
+            if name == "appdata" {
+                has_appdata = true;
+            } else {
+                return false;
+            }
+        } else if name != "desktop.ini" && !name.starts_with("ntuser") {
+            return false;
+        }
+    }
+    has_appdata
+}
+
+/// 扫 AppData 内部推断残留来自哪个软件。精确条目在前,泛条目兜底。
+fn orphan_hints(dir: &Path) -> Vec<String> {
+    const KNOWN: &[(&str, &str)] = &[
+        ("tencent\\qqpcmgr", "腾讯电脑管家"),
+        ("tencent\\wemeet", "腾讯会议"),
+        ("tencent\\wxwork", "企业微信"),
+        ("iqiyi", "爱奇艺"),
+        ("adobe", "Adobe"),
+        ("nvidia", "NVIDIA 驱动组件"),
+        ("tencent", "腾讯系软件"),
+    ];
+    fn push(name: &str, out: &mut Vec<String>) {
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for sub in ["AppData\\Roaming", "AppData\\Local", "AppData\\LocalLow"] {
+        let Ok(read) = std::fs::read_dir(dir.join(sub)) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let vendor = entry.file_name().to_string_lossy().to_lowercase();
+            let mut matched = false;
+            // vendor\app 二级 key 优先(区分腾讯全家桶里的具体软件)
+            if let Ok(inner) = std::fs::read_dir(entry.path()) {
+                for e2 in inner.flatten() {
+                    let key =
+                        format!("{vendor}\\{}", e2.file_name().to_string_lossy().to_lowercase());
+                    if let Some((_, name)) = KNOWN.iter().find(|(k, _)| key.starts_with(k)) {
+                        push(name, &mut out);
+                        matched = true;
+                    }
+                }
+            }
+            if !matched {
+                if let Some((_, name)) = KNOWN.iter().find(|(k, _)| vendor.starts_with(k)) {
+                    push(name, &mut out);
+                }
+            }
+            if out.len() >= 3 {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// 三条件判定主体(纯逻辑,不碰 tauri State,测试直接调用)
+fn detect_orphans() -> Result<Vec<(PathBuf, OrphanProfile)>, String> {
+    let users_root = PathBuf::from(format!(
+        "{}\\Users",
+        std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into())
+    ));
+    // 条件②数据源取不到 → 全部不判定
+    let Some(registered) = registered_profile_paths() else {
+        return Ok(Vec::new());
+    };
+    let current = std::env::var("USERPROFILE").ok().map(|p| p.to_lowercase());
+    const RESERVED: &[&str] = &["default", "default user", "public", "all users"];
+    let mut found: Vec<(PathBuf, OrphanProfile)> = Vec::new();
+    let read = std::fs::read_dir(&users_root).map_err(|e| e.to_string())?;
+    for entry in read.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() || ft.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        let name_lossy = entry.file_name().to_string_lossy().into_owned();
+        if RESERVED.contains(&name_lossy.to_lowercase().as_str()) {
+            continue;
+        }
+        let path_lower = path.to_string_lossy().to_lowercase();
+        if current.as_deref() == Some(path_lower.as_str()) {
+            continue;
+        }
+        // 条件②:系统登记过的 profile 不是孤儿
+        if registered.iter().any(|r| r == &path_lower) {
+            continue;
+        }
+        // 条件①:NTUSER.DAT 存在或无法确认(权限等)都跳过,保守方向
+        match path.join("NTUSER.DAT").try_exists() {
+            Ok(false) => {}
+            _ => continue,
+        }
+        // 条件③:废弃 profile 指纹
+        if !looks_like_abandoned_profile(&path) {
+            continue;
+        }
+        let (bytes, files) = crate::cleaner::measure_dir(&path, None);
+        found.push((
+            path.clone(),
+            OrphanProfile {
+                name: name_lossy,
+                path: path.to_string_lossy().into_owned(),
+                size_bytes: bytes,
+                file_count: files,
+                hints: orphan_hints(&path),
+            },
+        ));
+    }
+    found.sort_by(|a, b| b.1.size_bytes.cmp(&a.1.size_bytes));
+    Ok(found)
+}
+
+/// 识别孤儿 profile。与扫描主流程解耦(C:\Users 只有个位数子目录,现查毫秒级),
+/// 结果的原始 PathBuf 存入 state.orphans 作为删除接口的白名单。
+#[tauri::command]
+pub async fn get_orphan_profiles(app: AppHandle) -> Result<Vec<OrphanProfile>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let found = detect_orphans()?;
+        let state = app.state::<ScanState>();
+        *state.orphans.lock().map_err(|e| e.to_string())? =
+            found.iter().map(|(p, _)| p.clone()).collect();
+        Ok(found.into_iter().map(|(_, o)| o).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 删除孤儿 profile(整个目录进回收站,可反悔)。
+/// 双防线:①路径必须命中本次识别集,接口层杜绝任意路径删除;
+/// ②实际删除用识别集里的原始 PathBuf——乱码目录名含无效 UTF-16,
+/// 前端传回的 lossy 字符串只作匹配 key,当真实路径用会找不到文件。
+#[tauri::command]
+pub async fn delete_orphan_profile(app: AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<ScanState>();
+        let target = {
+            let orphans = state.orphans.lock().map_err(|e| e.to_string())?;
+            let lower = path.to_lowercase();
+            orphans
+                .iter()
+                .find(|p| p.to_string_lossy().to_lowercase() == lower)
+                .cloned()
+        };
+        let Some(real) = target else {
+            return Err("这个目录不在本次识别的残留列表里,拒绝删除".into());
+        };
+        recycle_delete(&real)?;
+        state
+            .orphans
+            .lock()
+            .map_err(|e| e.to_string())?
+            .retain(|p| p != &real);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+
+    /// 真机冒烟:ProfileList 必须可读,且当前用户一定在册——
+    /// 这是条件②「取数失败降级」防线依赖的基本事实
+    #[test]
+    fn profile_list_contains_current_user() {
+        let paths = registered_profile_paths().expect("ProfileList 读取失败,降级防线会全量跳过");
+        let me = std::env::var("USERPROFILE").unwrap().to_lowercase();
+        assert!(
+            paths.iter().any(|p| p == &me),
+            "当前用户 {me} 应在 ProfileList 中,实际:{paths:?}"
+        );
+    }
+
+    /// 真机自洽:识别结果必须逐条满足三条件与白名单(环境自适应,
+    /// 无孤儿的机器上结果为空也通过;有样本的机器上顺带人工核对输出)
+    #[test]
+    fn detected_orphans_are_self_consistent() {
+        let found = detect_orphans().expect("detect_orphans 不应失败");
+        let me = std::env::var("USERPROFILE").unwrap().to_lowercase();
+        for (raw, o) in &found {
+            eprintln!("识别: name=[{}] size={}B files={} hints={:?}", o.name, o.size_bytes, o.file_count, o.hints);
+            let lower = raw.to_string_lossy().to_lowercase();
+            assert_ne!(lower, me, "绝不允许把当前用户识别为孤儿");
+            for reserved in ["default", "public", "all users", "default user"] {
+                assert!(!lower.ends_with(&format!("\\{reserved}")), "系统目录 {reserved} 被误报");
+            }
+            assert!(
+                !raw.join("NTUSER.DAT").try_exists().unwrap_or(true),
+                "{lower} 有 NTUSER.DAT 却被判孤儿"
+            );
+        }
+        eprintln!("共识别 {} 个孤儿 profile", found.len());
+    }
+}
+
+#[cfg(test)]
+mod orphan_diag {
+    use super::*;
+
+    /// 端到端:合成一个孤儿 profile(仅 AppData + 腾讯管家特征),
+    /// 应被识别且 hints 命中;跑完清理现场。无权限创建时跳过。
+    #[test]
+    fn end_to_end_detects_synthetic_orphan() {
+        let dir = PathBuf::from(r"C:\Users\_orphan_e2e_test");
+        if std::fs::create_dir_all(dir.join(r"AppData\Roaming\Tencent\QQPCMgr")).is_err() {
+            eprintln!("跳过:无权限在 C:\\Users 下创建测试目录");
+            return;
+        }
+        std::fs::write(dir.join(r"AppData\Roaming\Tencent\QQPCMgr\t.log"), b"x").unwrap();
+        let found = detect_orphans().unwrap();
+        let hit = found
+            .iter()
+            .find(|(p, _)| p == &dir)
+            .map(|(_, o)| o.clone());
+        // 先清理现场再断言,失败也不留垃圾
+        let _ = std::fs::remove_dir_all(&dir);
+        let o = hit.expect("合成孤儿目录应被三条件识别");
+        assert!(
+            o.hints.iter().any(|h| h == "腾讯电脑管家"),
+            "hints 应含腾讯电脑管家,实际 {:?}",
+            o.hints
+        );
+        assert!(o.file_count >= 1 && o.size_bytes >= 1);
+    }
 }

@@ -19,6 +19,8 @@ pub fn run() {
             scan::get_migratables,
             scan::get_big_files,
             scan::delete_big_file,
+            scan::get_orphan_profiles,
+            scan::delete_orphan_profile,
             cleaner::scan_cleanables,
             cleaner::check_locks,
             cleaner::run_clean,
